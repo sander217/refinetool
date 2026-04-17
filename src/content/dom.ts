@@ -32,6 +32,17 @@ const MEANINGFUL_CLASS_REGEX =
   /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item)\b/i;
 
 const MAX_WALK = 8;
+
+// Minimum size for size-only (unnamed) container candidates. Raised to filter
+// out the "layout divs" that make hover jitter between overlapping wrappers.
+const SIZE_FALLBACK_MIN_WIDTH = 260;
+const SIZE_FALLBACK_MIN_HEIGHT = 140;
+
+// Below this size a node can't anchor a block-level selection regardless of
+// its tag/class — prevents tiny inline decoration from being a cycle target.
+const BLOCK_MIN_WIDTH = 80;
+const BLOCK_MIN_HEIGHT = 32;
+
 const EDITABLE_TEXT_TAGS = new Set([
   'h1',
   'h2',
@@ -77,8 +88,8 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
 
     const rect = current.getBoundingClientRect();
     if (
-      rect.width >= 220 &&
-      rect.height >= 100 &&
+      rect.width >= SIZE_FALLBACK_MIN_WIDTH &&
+      rect.height >= SIZE_FALLBACK_MIN_HEIGHT &&
       hasVisibleChildren(current) &&
       isSelectableCandidate(current)
     ) {
@@ -87,6 +98,76 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
     current = current.parentElement;
   }
   return isSelectableCandidate(start) ? start : null;
+}
+
+// Stickiness: if the pointer is still inside the previously-hovered target,
+// keep it. Prevents swapping to a sibling container when the cursor moves
+// between nested children within the same block.
+export function pickStableTarget(
+  raw: Element | null,
+  currentStable: Element | null,
+): Element | null {
+  if (!raw) return null;
+  if (
+    currentStable &&
+    document.contains(currentStable) &&
+    currentStable.contains(raw) &&
+    isSelectableCandidate(currentStable)
+  ) {
+    return currentStable;
+  }
+  return pickMeaningfulTarget(raw);
+}
+
+function isBlockCandidate(el: Element): boolean {
+  if (!isSelectableCandidate(el)) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < BLOCK_MIN_WIDTH || rect.height < BLOCK_MIN_HEIGHT) return false;
+
+  const tag = el.tagName.toLowerCase();
+  if (LEAF_TAGS.has(tag)) return true;
+  if (MEANINGFUL_TAGS.has(tag)) return true;
+  if (el.getAttribute('role')) return true;
+  if (el.getAttribute('aria-label')) return true;
+  if (el.getAttribute('data-testid')) return true;
+  const cls = readClassName(el);
+  if (cls && MEANINGFUL_CLASS_REGEX.test(cls)) return true;
+  if (
+    rect.width >= SIZE_FALLBACK_MIN_WIDTH &&
+    rect.height >= SIZE_FALLBACK_MIN_HEIGHT &&
+    hasVisibleChildren(el)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function walkToParentBlock(el: Element): Element | null {
+  let node: Element | null = el.parentElement;
+  while (
+    node &&
+    node !== document.body &&
+    node !== document.documentElement
+  ) {
+    if (isBlockCandidate(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+export function walkToChildBlock(el: Element): Element | null {
+  let best: Element | null = null;
+  let bestArea = 0;
+  for (const child of Array.from(el.children)) {
+    if (!isBlockCandidate(child)) continue;
+    const rect = child.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area > bestArea) {
+      best = child;
+      bestArea = area;
+    }
+  }
+  return best;
 }
 
 function readClassName(el: Element): string | null {
@@ -286,6 +367,7 @@ export function buildSelectedTarget(el: Element): SelectedTarget {
     boundingBox: getBoundingBox(el),
     snippet: truncate(outer.replace(/\s+/g, ' '), 400),
     tag: el.tagName.toLowerCase(),
+    hasImage: findImageTarget(el) !== null,
   };
 }
 
@@ -295,6 +377,13 @@ export function resolveSelectedElement(target: SelectedTarget): Element | null {
   } catch {
     return null;
   }
+}
+
+export function findImageTarget(root: Element): HTMLImageElement | null {
+  if (root.tagName.toLowerCase() === 'img') return root as HTMLImageElement;
+  const direct = root.querySelector('img');
+  if (direct instanceof HTMLImageElement) return direct;
+  return null;
 }
 
 export function getEditableTextElements(root: Element): HTMLElement[] {

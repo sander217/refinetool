@@ -287,6 +287,15 @@ export default function App() {
               onReorderSelected={(direction) =>
                 void runDirectEditAction({ type: 'reorder_selected', direction })
               }
+              onAttachImageReference={(payload) =>
+                void runDirectEditAction({ type: 'attach_image_reference', ...payload })
+              }
+              onMarkImageRegenerate={(prompt) =>
+                void runDirectEditAction({ type: 'mark_image_regenerate', prompt })
+              }
+              onClearImageIntent={() =>
+                void runDirectEditAction({ type: 'clear_image_intent' })
+              }
             />
             <NoteEditor
               value={draftInput}

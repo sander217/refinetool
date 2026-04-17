@@ -487,3 +487,46 @@ code {
   font-size: 11.5px;
   color: var(--text-subtle);
 }
+
+.ifl-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--text);
+}
+.ifl-input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ifl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.ifl-chip input[type='radio'] {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.ifl-chip:has(input[type='radio']:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ifl-divider {
+  border-top: 1px dashed var(--border);
+  margin: 4px 0;
+}
+

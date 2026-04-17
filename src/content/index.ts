@@ -5,11 +5,15 @@ import {
   buildSelectedTarget,
   describeChildren,
   describeEditableTextTarget,
+  findImageTarget,
   generateSelector,
   getEditableTextElements,
   getElementTextValue,
   pickMeaningfulTarget,
+  pickStableTarget,
   resolveSelectedElement,
+  walkToChildBlock,
+  walkToParentBlock,
 } from './dom';
 import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
 
@@ -27,12 +31,20 @@ if (!globalState.__iflContentScriptInitialized__) {
   let activePending: PendingSelection | null = null;
   let selectedElement: Element | null = null;
   let selectionVisible = false;
+  // When a selection is live we stop painting hover so the UI doesn't jitter
+  // over nested siblings. Explicit unlock (R key) returns to hover picking.
+  let selectionLocked = false;
   let inlineTextMode = false;
   let textOriginals = new Map<HTMLElement, string>();
   let originalParent: Element | null = null;
   let originalNextSibling: ChildNode | null = null;
   let originalDisplay = '';
   let refreshFrame = 0;
+
+  const REFINE_BANNER =
+    'Refine — click a region · [ / ] cycle parent·child · R reselect · ESC exit';
+  const SELECTION_BANNER =
+    'Selected — [ / ] parent·child · R reselect · Option+↑↓ also cycle · ESC exit';
 
   function isOverlayNode(el: Element | null): boolean {
     if (!el) return false;
@@ -48,8 +60,16 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onPointerMove(event: PointerEvent) {
   if (!refineEnabled || !overlay) return;
+  if (selectionLocked) {
+    // Keep the selection box stable; drop any leftover hover outline.
+    if (currentHover) {
+      overlay.hideHover();
+      currentHover = null;
+    }
+    return;
+  }
   const raw = elementFromEvent(event);
-  const target = pickMeaningfulTarget(raw);
+  const target = pickStableTarget(raw, currentHover);
   if (!target) {
     overlay.hideHover();
     currentHover = null;
@@ -65,6 +85,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   event.preventDefault();
   event.stopImmediatePropagation();
 
+  // Clicking always re-selects, even when the previous selection is locked.
   const raw = document.elementFromPoint(event.clientX, event.clientY) ?? currentHover ?? null;
   const picked = pickMeaningfulTarget(isOverlayNode(raw) ? null : raw);
   if (!picked) return;
@@ -73,6 +94,7 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onKeyDown(event: KeyboardEvent) {
   if (!refineEnabled) return;
+
   if (event.key === 'Escape') {
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -80,6 +102,36 @@ if (!globalState.__iflContentScriptInitialized__) {
     chrome.runtime
       .sendMessage({ type: 'SET_REFINE_MODE', enabled: false } satisfies ExtensionMessage)
       .catch(() => {});
+    return;
+  }
+
+  // Cycling: bracket keys (no modifier) or Option+Arrow. Only meaningful when
+  // a selection exists — otherwise there's nothing to cycle from.
+  const wantsParent =
+    event.key === '[' || (event.altKey && event.key === 'ArrowUp');
+  const wantsChild =
+    event.key === ']' || (event.altKey && event.key === 'ArrowDown');
+  const wantsUnlock = event.key === 'r' || event.key === 'R';
+
+  if (!activePending || !selectionVisible) return;
+
+  if (wantsParent) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cycleSelection('parent');
+    return;
+  }
+  if (wantsChild) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cycleSelection('child');
+    return;
+  }
+  if (wantsUnlock) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    selectionLocked = false;
+    overlay?.showBanner(REFINE_BANNER);
   }
   }
 
@@ -88,7 +140,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   refineEnabled = enabled;
   if (enabled) {
     overlay = overlay ?? createOverlay();
-    overlay.showBanner();
+    overlay.showBanner(selectionVisible ? SELECTION_BANNER : REFINE_BANNER);
     document.documentElement.classList.add('ifl-refine-mode');
     window.addEventListener('pointermove', onPointerMove, true);
     window.addEventListener('click', onClickCapture, true);
@@ -102,10 +154,51 @@ if (!globalState.__iflContentScriptInitialized__) {
     overlay?.hideHover();
     if (!opts.keepSelection) {
       selectionVisible = false;
+      selectionLocked = false;
       overlay?.hideSelection();
     }
     currentHover = null;
   }
+  }
+
+  function cycleSelection(direction: 'parent' | 'child') {
+  if (!activePending) return;
+  const current = resolveCurrentSelection();
+  if (!current) return;
+
+  const next =
+    direction === 'parent' ? walkToParentBlock(current) : walkToChildBlock(current);
+  if (!next || next === current) {
+    overlay?.showBanner(
+      direction === 'parent'
+        ? 'No wider block available — already at the outermost meaningful region.'
+        : 'No nested block inside this region to cycle into.',
+    );
+    return;
+  }
+
+  // Preserve already-captured diffs — cycling only re-scopes the region label
+  // and bounding box; the existing edits stay attached to the pending item.
+  const target = buildSelectedTarget(next);
+  selectedElement = next;
+  originalParent = next.parentElement;
+  originalNextSibling = next.nextSibling;
+  originalDisplay = (next as HTMLElement).style.display;
+
+  activePending = { ...activePending, target };
+  selectionVisible = true;
+  selectionLocked = true;
+  overlay?.showSelection(next.getBoundingClientRect(), target.label);
+  overlay?.hideHover();
+  overlay?.showBanner(SELECTION_BANNER);
+  currentHover = null;
+
+  chrome.runtime
+    .sendMessage({
+      type: 'TARGET_SELECTED',
+      payload: activePending,
+    } satisfies ExtensionMessage)
+    .catch(() => {});
   }
 
   function applyDirectEdit(action: DirectEditAction) {
@@ -144,7 +237,96 @@ if (!globalState.__iflContentScriptInitialized__) {
     return reorderSelectedElement(element, action.direction);
   }
 
+  if (action.type === 'attach_image_reference') {
+    return attachImageReference(element, action);
+  }
+
+  if (action.type === 'mark_image_regenerate') {
+    return markImageRegenerate(element, action);
+  }
+
+  if (action.type === 'clear_image_intent') {
+    return clearImageIntent();
+  }
+
   return { ok: false, error: 'Unsupported action.' };
+  }
+
+  function attachImageReference(
+  element: Element,
+  action: Extract<DirectEditAction, { type: 'attach_image_reference' }>,
+  ) {
+  const img = findImageTarget(element);
+  const originalSrc = img?.currentSrc || img?.src || undefined;
+  const targetLabel = activePending?.target.label ?? 'selected region';
+
+  const hasReference =
+    (action.referenceUrl && action.referenceUrl.trim().length > 0) ||
+    (action.referenceNote && action.referenceNote.trim().length > 0);
+  if (!hasReference) {
+    return { ok: false, error: 'Provide a URL, Figma link, or note before attaching.' };
+  }
+
+  updatePendingDiffs((diffs) => {
+    const existing = diffs.find((diff) => diff.type === 'image_replace_intent');
+    const next: EditDiff[] = diffs.filter(
+      (diff) => diff.type !== 'image_replace_intent' && diff.type !== 'image_regenerate_intent',
+    );
+    next.push({
+      id: existing?.id ?? uid(),
+      type: 'image_replace_intent',
+      selector: generateSelector(img ?? element),
+      target: targetLabel,
+      originalSrc,
+      referenceKind: action.referenceKind,
+      referenceUrl: action.referenceUrl?.trim() || undefined,
+      referenceNote: action.referenceNote?.trim() || undefined,
+      createdAt: existing?.createdAt ?? nowIso(),
+    });
+    return next;
+  });
+
+  overlay?.showBanner('Replace-image intent captured — image itself is unchanged.');
+  return { ok: true, pending: activePending };
+  }
+
+  function markImageRegenerate(
+  element: Element,
+  action: Extract<DirectEditAction, { type: 'mark_image_regenerate' }>,
+  ) {
+  const img = findImageTarget(element);
+  const originalSrc = img?.currentSrc || img?.src || undefined;
+  const targetLabel = activePending?.target.label ?? 'selected region';
+
+  updatePendingDiffs((diffs) => {
+    const existing = diffs.find((diff) => diff.type === 'image_regenerate_intent');
+    const next: EditDiff[] = diffs.filter(
+      (diff) => diff.type !== 'image_regenerate_intent' && diff.type !== 'image_replace_intent',
+    );
+    next.push({
+      id: existing?.id ?? uid(),
+      type: 'image_regenerate_intent',
+      selector: generateSelector(img ?? element),
+      target: targetLabel,
+      originalSrc,
+      prompt: action.prompt?.trim() || undefined,
+      createdAt: existing?.createdAt ?? nowIso(),
+    });
+    return next;
+  });
+
+  overlay?.showBanner('Regenerate-image intent captured — image itself is unchanged.');
+  return { ok: true, pending: activePending };
+  }
+
+  function clearImageIntent() {
+  updatePendingDiffs((diffs) =>
+    diffs.filter(
+      (diff) =>
+        diff.type !== 'image_replace_intent' && diff.type !== 'image_regenerate_intent',
+    ),
+  );
+  return { ok: true, pending: activePending };
   }
 
   function startInlineTextEdit(element: Element) {
@@ -434,12 +616,15 @@ if (!globalState.__iflContentScriptInitialized__) {
   selectedElement = picked;
   activePending = payload;
   selectionVisible = true;
+  selectionLocked = true;
   originalParent = picked.parentElement;
   originalNextSibling = picked.nextSibling;
   originalDisplay = (picked as HTMLElement).style.display;
 
   overlay?.showSelection(picked.getBoundingClientRect(), target.label);
   overlay?.hideHover();
+  overlay?.showBanner(SELECTION_BANNER);
+  currentHover = null;
 
   chrome.runtime
     .sendMessage({ type: 'TARGET_SELECTED', payload } satisfies ExtensionMessage)
@@ -473,11 +658,16 @@ if (!globalState.__iflContentScriptInitialized__) {
   activePending = null;
   selectedElement = null;
   selectionVisible = false;
+  selectionLocked = false;
   originalParent = null;
   originalNextSibling = null;
   originalDisplay = '';
   overlay?.hideSelection();
-  overlay?.hideBanner();
+  if (refineEnabled) {
+    overlay?.showBanner(REFINE_BANNER);
+  } else {
+    overlay?.hideBanner();
+  }
   }
 
   chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {

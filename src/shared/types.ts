@@ -11,6 +11,9 @@ export type SelectedTarget = {
   boundingBox: BoundingBox;
   snippet: string;
   tag: string;
+  // True when the selected element is an <img> or contains an <img>. Drives
+  // the image-intent controls in the panel.
+  hasImage: boolean;
 };
 
 export type InputMode = 'text' | 'voice';
@@ -29,8 +32,6 @@ export type GeneratedPrompts = {
   codex: string;
   generic: string;
 };
-
-export type BlockAction = 'hide' | 'remove' | 'move_up' | 'move_down';
 
 type EditDiffBase = {
   id: string;
@@ -55,7 +56,32 @@ export type ReorderDiff = EditDiffBase & {
   after: string[];
 };
 
-export type EditDiff = TextChangeDiff | RemoveDiff | HideDiff | ReorderDiff;
+// Image intents are captured-only — they don't mutate the live DOM. They tell
+// a downstream execution system "replace this image" / "regenerate this image"
+// and carry the reference material the user attached.
+export type ImageReferenceKind = 'url' | 'figma' | 'note';
+
+export type ImageReplaceIntentDiff = EditDiffBase & {
+  type: 'image_replace_intent';
+  originalSrc?: string;
+  referenceKind: ImageReferenceKind;
+  referenceUrl?: string;
+  referenceNote?: string;
+};
+
+export type ImageRegenerateIntentDiff = EditDiffBase & {
+  type: 'image_regenerate_intent';
+  originalSrc?: string;
+  prompt?: string;
+};
+
+export type EditDiff =
+  | TextChangeDiff
+  | RemoveDiff
+  | HideDiff
+  | ReorderDiff
+  | ImageReplaceIntentDiff
+  | ImageRegenerateIntentDiff;
 
 export type RefinementItem = {
   id: string;
@@ -86,6 +112,14 @@ export type DirectEditAction =
   | { type: 'hide_selected' }
   | { type: 'remove_selected' }
   | { type: 'reorder_selected'; direction: 'up' | 'down' }
+  | {
+      type: 'attach_image_reference';
+      referenceKind: ImageReferenceKind;
+      referenceUrl?: string;
+      referenceNote?: string;
+    }
+  | { type: 'mark_image_regenerate'; prompt?: string }
+  | { type: 'clear_image_intent' }
   | { type: 'reset_pending_selection'; revert?: boolean };
 
 export const STORAGE_KEYS = {

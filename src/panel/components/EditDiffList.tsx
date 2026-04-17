@@ -1,6 +1,11 @@
 import { useState } from 'react';
-import { describeEditDiff, diffTypeLabel, formatReorderSummary } from '../../shared/editDiffs';
-import type { EditDiff } from '../../shared/types';
+import {
+  describeEditDiff,
+  describeImageReference,
+  diffTypeLabel,
+  formatReorderSummary,
+} from '../../shared/editDiffs';
+import type { EditDiff, ImageReferenceKind } from '../../shared/types';
 
 type Props = {
   diffs: EditDiff[];
@@ -70,6 +75,31 @@ export function EditDiffList({
 function DiffSummary({ diff }: { diff: EditDiff }) {
   if (diff.type === 'reorder') {
     return <pre className="ifl-pre">{formatReorderSummary(diff)}</pre>;
+  }
+  if (diff.type === 'image_replace_intent') {
+    return (
+      <div className="ifl-pre">
+        <div>Replace image</div>
+        <div className="ifl-subtle ifl-subtle-small">
+          {describeImageReference(diff)}
+        </div>
+        {diff.originalSrc ? (
+          <div className="ifl-subtle ifl-subtle-small">from: {diff.originalSrc}</div>
+        ) : null}
+      </div>
+    );
+  }
+  if (diff.type === 'image_regenerate_intent') {
+    return (
+      <div className="ifl-pre">
+        <div>Regenerate image</div>
+        {diff.prompt ? (
+          <div className="ifl-subtle ifl-subtle-small">hint: {diff.prompt}</div>
+        ) : (
+          <div className="ifl-subtle ifl-subtle-small">no prompt hint</div>
+        )}
+      </div>
+    );
   }
   return <p className="ifl-pre">{describeEditDiff(diff)}</p>;
 }
@@ -164,6 +194,60 @@ function DiffEditor({
             <option value="hide">hide</option>
             <option value="remove">remove</option>
           </select>
+        </label>
+      ) : null}
+
+      {draft.type === 'image_replace_intent' ? (
+        <>
+          <label>
+            <span>Reference kind</span>
+            <select
+              value={draft.referenceKind}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  referenceKind: event.currentTarget.value as ImageReferenceKind,
+                })
+              }
+            >
+              <option value="url">url</option>
+              <option value="figma">figma</option>
+              <option value="note">note</option>
+            </select>
+          </label>
+          {draft.referenceKind === 'note' ? (
+            <label>
+              <span>Reference note</span>
+              <textarea
+                rows={2}
+                value={draft.referenceNote ?? ''}
+                onChange={(event) =>
+                  setDraft({ ...draft, referenceNote: event.currentTarget.value })
+                }
+              />
+            </label>
+          ) : (
+            <label>
+              <span>Reference URL</span>
+              <input
+                value={draft.referenceUrl ?? ''}
+                onChange={(event) =>
+                  setDraft({ ...draft, referenceUrl: event.currentTarget.value })
+                }
+              />
+            </label>
+          )}
+        </>
+      ) : null}
+
+      {draft.type === 'image_regenerate_intent' ? (
+        <label>
+          <span>Regenerate prompt</span>
+          <textarea
+            rows={2}
+            value={draft.prompt ?? ''}
+            onChange={(event) => setDraft({ ...draft, prompt: event.currentTarget.value })}
+          />
         </label>
       ) : null}
 

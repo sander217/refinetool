@@ -5,7 +5,7 @@ import type {
   RefinementItem,
   SelectedTarget,
 } from '../../shared/types';
-import { formatEditDiffForPrompt } from '../../shared/editDiffs';
+import { describeImageReference, formatEditDiffForPrompt } from '../../shared/editDiffs';
 
 export type PromptContext = {
   parsed: ParsedRefinement;
@@ -48,6 +48,12 @@ export function describeDiff(diff: EditDiff): string {
       return `Remove ${diff.target} (${diff.selector})`;
     case 'reorder':
       return `Reorder ${diff.target} (${diff.selector}): [${diff.before.join(' | ')}] -> [${diff.after.join(' | ')}]`;
+    case 'image_replace_intent':
+      return `Replace image in ${diff.target} (${diff.selector}) — ${describeImageReference(diff)}`;
+    case 'image_regenerate_intent':
+      return `Regenerate image in ${diff.target} (${diff.selector})${
+        diff.prompt ? ` — hint: ${diff.prompt}` : ''
+      }`;
   }
 }
 
