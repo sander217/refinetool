@@ -46,7 +46,7 @@ export function RefinementItemCard({
         <div>
           <div className="ifl-item-title">{item.parsed.target}</div>
           <div className="ifl-subtle ifl-subtle-small">
-            {new Date(item.createdAt).toLocaleString()} · {item.inputMode} · {item.parsed.priority}
+            {new Date(item.createdAt).toLocaleString()} · {item.inputMode}
           </div>
         </div>
         <span className="ifl-chevron">{expanded ? '▾' : '▸'}</span>
@@ -242,7 +242,18 @@ function ParsedView({ parsed }: { parsed: ParsedRefinement }) {
           <em className="ifl-subtle">none</em>
         )}
       </dd>
-      <dt>Priority</dt><dd>{parsed.priority}</dd>
+      <dt>Implementation direction</dt>
+      <dd>
+        {parsed.implementationNotes.length ? (
+          <ul className="ifl-list">
+            {parsed.implementationNotes.map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
+        ) : (
+          <em className="ifl-subtle">none</em>
+        )}
+      </dd>
     </dl>
   );
 }
@@ -304,15 +315,20 @@ function ParsedEditor({
         />
       </label>
       <label>
-        <span>Priority</span>
-        <select
-          value={value.priority}
-          onChange={(e) => update('priority', e.currentTarget.value as ParsedRefinement['priority'])}
-        >
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
+        <span>Implementation direction (one per line)</span>
+        <textarea
+          value={value.implementationNotes.join('\n')}
+          onChange={(e) =>
+            update(
+              'implementationNotes',
+              e.currentTarget.value
+                .split(/\n+/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            )
+          }
+          rows={4}
+        />
       </label>
     </div>
   );

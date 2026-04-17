@@ -13,9 +13,23 @@ chrome.runtime.onInstalled.addListener(() => {
 // re-queries `GET_REFINE_MODE` on mount and after refine-mode changes.
 const refineModeByTab = new Map<number, boolean>();
 
+async function ensureContentScript(tabId: number): Promise<void> {
+  const manifest = chrome.runtime.getManifest();
+  const contentScriptFiles = manifest.content_scripts?.[0]?.js ?? [];
+  if (contentScriptFiles.length === 0) {
+    throw new Error('No content script files declared in the manifest.');
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: contentScriptFiles,
+  });
+}
+
 async function setRefineMode(tabId: number, enabled: boolean) {
   refineModeByTab.set(tabId, enabled);
   try {
+    await ensureContentScript(tabId);
     await chrome.tabs.sendMessage(tabId, {
       type: 'SET_REFINE_MODE',
       enabled,
@@ -35,6 +49,18 @@ async function setRefineMode(tabId: number, enabled: boolean) {
 async function getActiveTabId(): Promise<number | null> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tab?.id ?? null;
+}
+
+async function clearPendingForTab(tabId: number): Promise<void> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.pending);
+  const pending = result[STORAGE_KEYS.pending] as { tabId?: number } | undefined;
+  if (pending?.tabId !== tabId) return;
+
+  await chrome.storage.local.remove(STORAGE_KEYS.pending);
+  refineModeByTab.set(tabId, false);
+  chrome.runtime
+    .sendMessage({ type: 'REFINE_MODE_CHANGED', tabId, enabled: false } satisfies ExtensionMessage)
+    .catch(() => {});
 }
 
 chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
@@ -70,6 +96,7 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
         return;
       }
       try {
+        await ensureContentScript(tab.id);
         const response = await chrome.tabs.sendMessage(tab.id, msg);
         sendResponse(response);
       } catch (err) {
@@ -86,20 +113,15 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
   }
 
   if (msg.type === 'TARGET_SELECTED') {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== 'number') {
+      sendResponse({ ok: false, error: 'No source tab for selection' });
+      return true;
+    }
+
     void chrome.storage.local
-      .set({ [STORAGE_KEYS.pending]: msg.payload })
+      .set({ [STORAGE_KEYS.pending]: { ...msg.payload, tabId } })
       .then(() => {
-        const tabId = sender.tab?.id;
-        if (typeof tabId === 'number') {
-          refineModeByTab.set(tabId, false);
-          chrome.runtime
-            .sendMessage({
-              type: 'REFINE_MODE_CHANGED',
-              tabId,
-              enabled: false,
-            } satisfies ExtensionMessage)
-            .catch(() => {});
-        }
         sendResponse({ ok: true });
       });
     return true;
@@ -113,6 +135,7 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
       }
 
       try {
+        await ensureContentScript(tabId);
         const result = (await chrome.tabs.sendMessage(tabId, msg)) as
           | { ok: boolean; pending?: unknown; error?: string }
           | undefined;
@@ -142,4 +165,10 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   refineModeByTab.delete(tabId);
+  void clearPendingForTab(tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== 'loading') return;
+  void clearPendingForTab(tabId);
 });

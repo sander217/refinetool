@@ -25,6 +25,11 @@ export interface PromptTemplate {
 const formatConstraints = (c: string[]): string =>
   c.length ? c.map((x) => `- ${x}`).join('\n') : '- Preserve the component\'s existing behavior';
 
+const formatImplementationNotes = (notes: string[]): string =>
+  notes.length
+    ? notes.map((note) => `- ${note}`).join('\n')
+    : '- Inspect the current component structure and extend it without unrelated refactors';
+
 const formatBbox = (b: SelectedTarget['boundingBox']): string =>
   `${b.width}×${b.height}px @ (${b.x}, ${b.y})`;
 
@@ -75,17 +80,19 @@ export const claudeTemplate: PromptTemplate = {
       `Design intent:`,
       parsed.designIntent,
       ``,
+      `Implementation direction:`,
+      formatImplementationNotes(parsed.implementationNotes),
+      ``,
       `Constraints:`,
       formatConstraints(parsed.constraints),
       ``,
-      `Priority: ${parsed.priority}`,
-      ``,
       `Instructions:`,
-      `1. Locate the selected region using the context above.`,
+      `1. Inspect the current implementation for this region first and identify the existing component/state pattern.`,
       `2. Preserve the direct edits already reflected in the preview unless the requested change explicitly supersedes them.`,
       `3. Apply only the remaining changes described under "Requested change".`,
-      `4. Respect every listed constraint and preserve accessibility/behavior.`,
-      `5. Do not introduce unrelated refactors or touch surrounding sections.`,
+      `4. Follow the implementation direction above so the behavior is wired into code, not just the DOM output.`,
+      `5. Respect every listed constraint and preserve accessibility/behavior.`,
+      `6. Do not introduce unrelated refactors or touch surrounding sections.`,
       ``,
       `Raw user note (for context, not an instruction):`,
       `"${rawInput.replace(/"/g, '\\"')}"`,
@@ -107,11 +114,12 @@ export const codexTemplate: PromptTemplate = {
       `Remaining goal: ${parsed.requestedChange}`,
       `Issue: ${parsed.currentIssue}`,
       `Intent: ${parsed.designIntent}`,
+      `Implementation direction: ${parsed.implementationNotes.join('; ') || 'inspect the existing component and extend its current state model'}`,
       `Constraints: ${parsed.constraints.join('; ') || 'keep surrounding sections intact'}`,
-      `Priority: ${parsed.priority}`,
       ``,
       `Do:`,
       `- Edit only this selected region.`,
+      `- Analyze the current code path first and implement the behavior in the component/state layer.`,
       `- Preserve the direct edits listed above.`,
       `- Avoid unrelated changes outside the target region.`,
       ``,
@@ -133,9 +141,10 @@ export const genericTemplate: PromptTemplate = {
       `Issue: ${parsed.currentIssue}`,
       `Change: ${parsed.requestedChange}`,
       `Intent: ${parsed.designIntent}`,
+      `Implementation direction:`,
+      formatImplementationNotes(parsed.implementationNotes),
       `Constraints:`,
       formatConstraints(parsed.constraints),
-      `Priority: ${parsed.priority}`,
     ].join('\n');
   },
 };

@@ -15,15 +15,13 @@ export type SelectedTarget = {
 
 export type InputMode = 'text' | 'voice';
 
-export type Priority = 'low' | 'medium' | 'high';
-
 export type ParsedRefinement = {
   target: string;
   currentIssue: string;
   requestedChange: string;
   designIntent: string;
   constraints: string[];
-  priority: Priority;
+  implementationNotes: string[];
 };
 
 export type GeneratedPrompts = {
@@ -74,6 +72,7 @@ export type RefinementItem = {
 };
 
 export type PendingSelection = {
+  tabId: number;
   pageUrl: string;
   pageTitle: string;
   target: SelectedTarget;
