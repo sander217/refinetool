@@ -5,6 +5,7 @@ import {
   buildSelectedTarget,
   describeChildren,
   describeEditableTextTarget,
+  generateSelector,
   getEditableTextElements,
   getElementTextValue,
   pickMeaningfulTarget,
@@ -244,9 +245,11 @@ function captureTextDiff(element: HTMLElement) {
     next.push({
       id: uid(),
       type: 'text_change',
+      selector: generateSelector(element),
       target: diffTarget,
       before,
       after,
+      createdAt: nowIso(),
     });
     return next;
   });
@@ -274,7 +277,9 @@ function applyVisibilityChange(element: Element, type: 'hide' | 'remove') {
     next.push({
       id: existing?.id ?? uid(),
       type,
+      selector: activePending?.target.selector ?? generateSelector(element),
       target: targetLabel,
+      createdAt: existing?.createdAt ?? nowIso(),
     });
     return next;
   });
@@ -313,9 +318,11 @@ function reorderSelectedElement(element: Element, direction: 'up' | 'down') {
     next.push({
       id: existing?.id ?? uid(),
       type: 'reorder',
+      selector: generateSelector(parent),
       target: targetLabel,
       before: existing?.type === 'reorder' ? existing.before : before,
       after,
+      createdAt: existing?.createdAt ?? nowIso(),
     });
     return next;
   });

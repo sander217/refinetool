@@ -14,7 +14,7 @@ This is still intentionally narrow. It is not trying to become Figma, Webflow, o
 ## Setup
 
 ```bash
-cd /Users/sanderchen/Documents/Claude/Projects/interface-finetuning-extension/freeyourhand
+cd /Users/sanderchen/Documents/Claude/Projects/freeyourhand
 npm install
 npm run build
 ```

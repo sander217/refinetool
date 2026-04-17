@@ -32,30 +32,27 @@ export type GeneratedPrompts = {
   generic: string;
 };
 
-export type TextChangeDiff = {
+export type BlockAction = 'hide' | 'remove' | 'move_up' | 'move_down';
+
+type EditDiffBase = {
   id: string;
-  type: 'text_change';
+  selector: string;
   target: string;
+  createdAt: string;
+};
+
+export type TextChangeDiff = EditDiffBase & {
+  type: 'text_change';
   before: string;
   after: string;
 };
 
-export type RemoveDiff = {
-  id: string;
-  type: 'remove';
-  target: string;
-};
+export type RemoveDiff = EditDiffBase & { type: 'remove' };
 
-export type HideDiff = {
-  id: string;
-  type: 'hide';
-  target: string;
-};
+export type HideDiff = EditDiffBase & { type: 'hide' };
 
-export type ReorderDiff = {
-  id: string;
+export type ReorderDiff = EditDiffBase & {
   type: 'reorder';
-  target: string;
   before: string[];
   after: string[];
 };

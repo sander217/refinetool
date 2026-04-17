@@ -33,6 +33,19 @@ const formatDiffs = (diffs: EditDiff[]): string =>
     ? diffs.map((diff) => formatEditDiffForPrompt(diff)).join('\n')
     : '- No direct preview edits were applied yet';
 
+export function describeDiff(diff: EditDiff): string {
+  switch (diff.type) {
+    case 'text_change':
+      return `Text change on ${diff.target} (${diff.selector}): "${diff.before}" -> "${diff.after}"`;
+    case 'hide':
+      return `Hide ${diff.target} (${diff.selector})`;
+    case 'remove':
+      return `Remove ${diff.target} (${diff.selector})`;
+    case 'reorder':
+      return `Reorder ${diff.target} (${diff.selector}): [${diff.before.join(' | ')}] -> [${diff.after.join(' | ')}]`;
+  }
+}
+
 export const claudeTemplate: PromptTemplate = {
   id: 'claude-code',
   render({ parsed, target, pageUrl, pageTitle, rawInput, transcript, diffs }) {
@@ -87,7 +100,9 @@ export const codexTemplate: PromptTemplate = {
     return [
       `Target: ${parsed.target} (${target.selector})`,
       `Direct edits already applied: ${
-        diffs.length ? diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, '')).join('; ') : 'none'
+        diffs.length
+          ? diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, '')).join('; ')
+          : 'none'
       }`,
       `Remaining goal: ${parsed.requestedChange}`,
       `Issue: ${parsed.currentIssue}`,
@@ -139,10 +154,12 @@ export function generatePrompts(ctx: PromptContext): GeneratedPrompts {
   };
 }
 
-export function generatePromptsForItem(item: Pick<
-  RefinementItem,
-  'parsed' | 'target' | 'pageUrl' | 'pageTitle' | 'rawInput' | 'transcript' | 'diffs'
->): GeneratedPrompts {
+export function generatePromptsForItem(
+  item: Pick<
+    RefinementItem,
+    'parsed' | 'target' | 'pageUrl' | 'pageTitle' | 'rawInput' | 'transcript' | 'diffs'
+  >,
+): GeneratedPrompts {
   return generatePrompts({
     parsed: item.parsed,
     target: item.target,

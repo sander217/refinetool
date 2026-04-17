@@ -96,9 +96,7 @@ export function RefinementItemCard({
                 <p className="ifl-pre">
                   {item.rawInput || <em className="ifl-subtle">(empty)</em>}
                 </p>
-                {item.transcript ? (
-                  <p className="ifl-pre">Transcript: {item.transcript}</p>
-                ) : null}
+                {item.transcript ? <p className="ifl-pre">Transcript: {item.transcript}</p> : null}
               </>
             )}
           </div>
@@ -129,7 +127,9 @@ export function RefinementItemCard({
                 </div>
               ) : (
                 <div className="ifl-row-end">
-                  <button className="ifl-button-ghost" onClick={onReparse}>Re-parse</button>
+                  <button className="ifl-button-ghost" onClick={onReparse}>
+                    Re-parse
+                  </button>
                   <button className="ifl-button-ghost" onClick={() => setEditingParsed(true)}>
                     Edit
                   </button>
@@ -213,7 +213,9 @@ export function RefinementItemCard({
           </div>
 
           <div className="ifl-row-end">
-            <button className="ifl-button-danger" onClick={onDelete}>Delete</button>
+            <button className="ifl-button-danger" onClick={onDelete}>
+              Delete
+            </button>
           </div>
         </div>
       )}
@@ -245,7 +247,13 @@ function ParsedView({ parsed }: { parsed: ParsedRefinement }) {
   );
 }
 
-function ParsedEditor({ value, onChange }: { value: ParsedRefinement; onChange: (v: ParsedRefinement) => void }) {
+function ParsedEditor({
+  value,
+  onChange,
+}: {
+  value: ParsedRefinement;
+  onChange: (v: ParsedRefinement) => void;
+}) {
   const update = <K extends keyof ParsedRefinement>(key: K, v: ParsedRefinement[K]) =>
     onChange({ ...value, [key]: v });
 
@@ -253,10 +261,7 @@ function ParsedEditor({ value, onChange }: { value: ParsedRefinement; onChange: 
     <div className="ifl-form">
       <label>
         <span>Target</span>
-        <input
-          value={value.target}
-          onChange={(e) => update('target', e.currentTarget.value)}
-        />
+        <input value={value.target} onChange={(e) => update('target', e.currentTarget.value)} />
       </label>
       <label>
         <span>Current issue</span>
@@ -302,9 +307,7 @@ function ParsedEditor({ value, onChange }: { value: ParsedRefinement; onChange: 
         <span>Priority</span>
         <select
           value={value.priority}
-          onChange={(e) =>
-            update('priority', e.currentTarget.value as ParsedRefinement['priority'])
-          }
+          onChange={(e) => update('priority', e.currentTarget.value as ParsedRefinement['priority'])}
         >
           <option value="low">low</option>
           <option value="medium">medium</option>
