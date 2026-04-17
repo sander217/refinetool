@@ -3,7 +3,7 @@ export type OverlayHandles = {
   hideHover: () => void;
   showSelection: (rect: DOMRect, label: string) => void;
   hideSelection: () => void;
-  showBanner: () => void;
+  showBanner: (text?: string) => void;
   hideBanner: () => void;
   teardown: () => void;
 };
@@ -13,6 +13,8 @@ export const OVERLAY_IDS = {
   selection: 'ifl-selection-box',
   banner: 'ifl-banner',
   styles: 'ifl-overlay-styles',
+  inlineEditable: 'ifl-inline-editable',
+  inlineEditing: 'ifl-inline-editing',
 } as const;
 
 export function createOverlay(): OverlayHandles {
@@ -49,7 +51,8 @@ export function createOverlay(): OverlayHandles {
     hideSelection() {
       selection.style.display = 'none';
     },
-    showBanner() {
+    showBanner(text) {
+      if (text) banner.textContent = text;
       banner.style.display = 'block';
     },
     hideBanner() {
@@ -72,8 +75,8 @@ function spawn(tag: string, id: string): HTMLElement {
 }
 
 function positionBox(el: HTMLElement, rect: DOMRect) {
-  el.style.top = `${rect.top + window.scrollY}px`;
-  el.style.left = `${rect.left + window.scrollX}px`;
+  el.style.top = `${rect.top}px`;
+  el.style.left = `${rect.left}px`;
   el.style.width = `${rect.width}px`;
   el.style.height = `${rect.height}px`;
 }
@@ -84,7 +87,7 @@ function ensureStyles() {
   style.id = OVERLAY_IDS.styles;
   style.textContent = `
     #${OVERLAY_IDS.hover}, #${OVERLAY_IDS.selection} {
-      position: absolute;
+      position: fixed;
       pointer-events: none;
       z-index: 2147483646;
       box-sizing: border-box;
@@ -129,6 +132,16 @@ function ensureStyles() {
       letter-spacing: 0.2px;
       pointer-events: none;
       box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+    }
+    .${OVERLAY_IDS.inlineEditable} {
+      outline: 2px dashed rgba(88, 101, 242, 0.8);
+      outline-offset: 2px;
+      cursor: text !important;
+      background: rgba(88, 101, 242, 0.08);
+    }
+    .${OVERLAY_IDS.inlineEditing} {
+      outline-style: solid;
+      background: rgba(88, 101, 242, 0.14);
     }
     html.ifl-refine-mode, html.ifl-refine-mode * { cursor: crosshair !important; }
   `;

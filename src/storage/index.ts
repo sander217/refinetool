@@ -43,6 +43,16 @@ export async function setPendingSelection(p: PendingSelection): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.pending]: p });
 }
 
+export async function updatePendingSelection(
+  patch: Partial<PendingSelection>,
+): Promise<PendingSelection | null> {
+  const current = await getPendingSelection();
+  if (!current) return null;
+  const next = { ...current, ...patch };
+  await setPendingSelection(next);
+  return next;
+}
+
 export async function clearPendingSelection(): Promise<void> {
   await chrome.storage.local.remove(STORAGE_KEYS.pending);
 }

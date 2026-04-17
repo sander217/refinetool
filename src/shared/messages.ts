@@ -1,10 +1,16 @@
-import type { BlockAction, EditDiff, PendingSelection } from './types';
+import type {
+  BlockAction,
+  DirectEditAction,
+  EditDiff,
+  PendingSelection,
+} from './types';
 
 export type ExtensionMessage =
   | { type: 'SET_REFINE_MODE'; enabled: boolean }
   | { type: 'REFINE_MODE_CHANGED'; tabId: number; enabled: boolean }
   | { type: 'GET_REFINE_MODE' }
   | { type: 'TARGET_SELECTED'; payload: PendingSelection }
+  | { type: 'APPLY_DIRECT_EDIT'; action: DirectEditAction }
   | { type: 'START_TEXT_EDIT'; selector: string }
   | { type: 'END_TEXT_EDIT'; selector: string; commit: boolean }
   | { type: 'BLOCK_ACTION'; selector: string; action: BlockAction }

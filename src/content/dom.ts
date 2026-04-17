@@ -32,9 +32,28 @@ const MEANINGFUL_CLASS_REGEX =
   /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item)\b/i;
 
 const MAX_WALK = 8;
+const EDITABLE_TEXT_TAGS = new Set([
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'p',
+  'span',
+  'button',
+  'a',
+  'label',
+  'strong',
+  'em',
+  'small',
+  'li',
+  'blockquote',
+]);
 
 export function pickMeaningfulTarget(start: Element | null): Element | null {
   if (!start) return null;
+  if (isRootContainer(start)) return null;
   const startTag = start.tagName.toLowerCase();
   if (LEAF_TAGS.has(startTag)) return start;
 
@@ -48,21 +67,26 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
     i++
   ) {
     const tag = current.tagName.toLowerCase();
-    if (MEANINGFUL_TAGS.has(tag)) return current;
-    if (current.getAttribute('role')) return current;
-    if (current.getAttribute('aria-label')) return current;
-    if (current.getAttribute('data-testid')) return current;
+    if (MEANINGFUL_TAGS.has(tag) && isSelectableCandidate(current)) return current;
+    if (current.getAttribute('role') && isSelectableCandidate(current)) return current;
+    if (current.getAttribute('aria-label') && isSelectableCandidate(current)) return current;
+    if (current.getAttribute('data-testid') && isSelectableCandidate(current)) return current;
 
     const cls = readClassName(current);
-    if (cls && MEANINGFUL_CLASS_REGEX.test(cls)) return current;
+    if (cls && MEANINGFUL_CLASS_REGEX.test(cls) && isSelectableCandidate(current)) return current;
 
     const rect = current.getBoundingClientRect();
-    if (rect.width >= 220 && rect.height >= 100 && hasVisibleChildren(current)) {
+    if (
+      rect.width >= 220 &&
+      rect.height >= 100 &&
+      hasVisibleChildren(current) &&
+      isSelectableCandidate(current)
+    ) {
       return current;
     }
     current = current.parentElement;
   }
-  return start;
+  return isSelectableCandidate(start) ? start : null;
 }
 
 function readClassName(el: Element): string | null {
@@ -83,6 +107,24 @@ function hasVisibleChildren(el: Element): boolean {
     if (seen >= 2) return true;
   }
   return false;
+}
+
+function isRootContainer(el: Element): boolean {
+  return el === document.body || el === document.documentElement;
+}
+
+function isSelectableCandidate(el: Element): boolean {
+  if (isRootContainer(el)) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+
+  if (viewportWidth > 0 && rect.width >= viewportWidth * 0.97) return false;
+  if (viewportHeight > 0 && rect.height >= viewportHeight * 0.92) return false;
+
+  return true;
 }
 
 export function generateSelector(el: Element): string {
@@ -245,4 +287,81 @@ export function buildSelectedTarget(el: Element): SelectedTarget {
     snippet: truncate(outer.replace(/\s+/g, ' '), 400),
     tag: el.tagName.toLowerCase(),
   };
+}
+
+export function resolveSelectedElement(target: SelectedTarget): Element | null {
+  try {
+    return document.querySelector(target.selector);
+  } catch {
+    return null;
+  }
+}
+
+export function getEditableTextElements(root: Element): HTMLElement[] {
+  const candidates = new Set<HTMLElement>();
+  const rootEl = root as HTMLElement;
+  if (isEditableTextElement(rootEl)) candidates.add(rootEl);
+
+  for (const node of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+    if (isEditableTextElement(node)) {
+      candidates.add(node);
+    }
+  }
+
+  return Array.from(candidates);
+}
+
+export function getElementTextValue(el: HTMLElement): string {
+  return cleanText(el.innerText || el.textContent || '');
+}
+
+export function describeEditableTextTarget(regionLabel: string, el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  const text = getElementTextValue(el as HTMLElement);
+  const preview = text ? ` "${truncate(text, 36)}"` : '';
+
+  if (/^h[1-6]$/.test(tag)) return `${regionLabel} heading${preview}`;
+  if (tag === 'button') return `${regionLabel} button label${preview}`;
+  if (tag === 'a') return `${regionLabel} link label${preview}`;
+  if (tag === 'p') return `${regionLabel} paragraph${preview}`;
+  if (tag === 'label') return `${regionLabel} field label${preview}`;
+  return `${regionLabel} ${tag}${preview}`;
+}
+
+export function describeChildren(parent: Element): string[] {
+  return Array.from(parent.children)
+    .map((child) => labelTarget(child))
+    .map((label) => truncate(label, 60));
+}
+
+function isEditableTextElement(el: HTMLElement): boolean {
+  if (!isVisible(el)) return false;
+  if (el.isContentEditable) return false;
+  if (el.closest(`#ifl-banner`)) return false;
+
+  const tag = el.tagName.toLowerCase();
+  if (!EDITABLE_TEXT_TAGS.has(tag)) return false;
+
+  const text = getElementTextValue(el);
+  if (!text) return false;
+  if (tag === 'span' || tag === 'strong' || tag === 'em' || tag === 'small') {
+    return hasSimpleTextStructure(el);
+  }
+  return text.length > 0;
+}
+
+function hasSimpleTextStructure(el: HTMLElement): boolean {
+  if (el.children.length === 0) return true;
+  return Array.from(el.children).every((child) => child.children.length === 0);
+}
+
+function isVisible(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function cleanText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }

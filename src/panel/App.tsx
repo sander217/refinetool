@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ExtensionMessage, RefineModeResponse } from '../shared/messages';
-import type {
-  EditDiff,
-  PendingSelection,
-  RefinementItem,
-} from '../shared/types';
+import type { DirectEditAction, PendingSelection, RefinementItem } from '../shared/types';
 import { STORAGE_KEYS } from '../shared/types';
 import {
   addItem,
@@ -13,20 +9,19 @@ import {
   getItems,
   getPendingSelection,
   setItems,
-  setPendingSelection,
   subscribeToStorage,
   updateItem,
+  updatePendingSelection,
 } from '../storage';
 import { refinementParser } from '../services/parser';
-import { generatePrompts } from '../services/promptTemplates';
-import { uid, nowIso } from '../shared/utils';
+import { generatePromptsForItem } from '../services/promptTemplates';
+import { nowIso, uid } from '../shared/utils';
 
-import { Header } from './components/Header';
 import { ActiveTargetCard } from './components/ActiveTargetCard';
+import { ExportBar } from './components/ExportBar';
+import { Header } from './components/Header';
 import { NoteEditor } from './components/NoteEditor';
 import { RefinementItemCard } from './components/RefinementItemCard';
-import { ExportBar } from './components/ExportBar';
-import { DirectEditPanel } from './components/DirectEditPanel';
 
 export default function App() {
   const [refineEnabled, setRefineEnabled] = useState(false);
@@ -35,16 +30,18 @@ export default function App() {
   const [draftInput, setDraftInput] = useState('');
   const [draftInputMode, setDraftInputMode] = useState<'text' | 'voice'>('text');
   const [isSaving, setIsSaving] = useState(false);
+  const [isApplyingEdit, setIsApplyingEdit] = useState(false);
+  const [inlineTextEditing, setInlineTextEditing] = useState(false);
+  const [editError, setEditError] = useState('');
   const [pendingLabel, setPendingLabel] = useState('');
 
-  // Initial load.
   useEffect(() => {
     let cancelled = false;
     void Promise.all([getItems(), getPendingSelection(), queryRefineMode()]).then(
       ([storedItems, storedPending, enabled]) => {
         if (cancelled) return;
-        setItemsState(storedItems.map(ensureItemDiffs));
-        setPending(storedPending ? ensurePendingDiffs(storedPending) : null);
+        setItemsState(storedItems);
+        setPending(storedPending);
         if (storedPending) setPendingLabel(storedPending.target.label);
         setRefineEnabled(enabled);
       },
@@ -54,23 +51,32 @@ export default function App() {
     };
   }, []);
 
-  // React to storage changes (pending selection written by the content script).
   useEffect(() => {
     return subscribeToStorage((changes) => {
       if (STORAGE_KEYS.pending in changes) {
-        const raw = changes[STORAGE_KEYS.pending].newValue as PendingSelection | undefined;
-        const next = raw ? ensurePendingDiffs(raw) : null;
-        setPending(next);
-        if (next) setPendingLabel(next.target.label);
+        const next = changes[STORAGE_KEYS.pending].newValue as PendingSelection | undefined;
+        setPending(next ?? null);
+        if (next) {
+          setPendingLabel(next.target.label);
+        } else {
+          setInlineTextEditing(false);
+          setEditError('');
+        }
       }
       if (STORAGE_KEYS.items in changes) {
-        const raw = changes[STORAGE_KEYS.items].newValue as RefinementItem[] | undefined;
-        setItemsState((raw ?? []).map(ensureItemDiffs));
+        const next = changes[STORAGE_KEYS.items].newValue as RefinementItem[] | undefined;
+        setItemsState(next ?? []);
       }
     });
   }, []);
 
-  // Refine-mode broadcasts from the background worker.
+  useEffect(() => {
+    if (!pending) return;
+    setDraftInput('');
+    setDraftInputMode('text');
+    setEditError('');
+  }, [pending?.capturedAt]);
+
   useEffect(() => {
     const listener = (msg: ExtensionMessage) => {
       if (msg.type === 'REFINE_MODE_CHANGED') {
@@ -93,12 +99,60 @@ export default function App() {
     }
   }, []);
 
+  const runDirectEditAction = useCallback(async (action: DirectEditAction) => {
+    setIsApplyingEdit(true);
+    setEditError('');
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        type: 'APPLY_DIRECT_EDIT',
+        action,
+      } satisfies ExtensionMessage)) as
+        | { ok?: boolean; pending?: PendingSelection | null; error?: string }
+        | undefined;
+
+      if (!response?.ok) {
+        setEditError(response?.error ?? 'Unable to apply the preview edit.');
+        return false;
+      }
+
+      if (action.type === 'start_inline_text_edit') {
+        setInlineTextEditing(true);
+      }
+      if (action.type === 'stop_inline_text_edit' || action.type === 'reset_pending_selection') {
+        setInlineTextEditing(false);
+      }
+      return true;
+    } catch (err) {
+      console.warn('[IFL] direct edit failed', err);
+      setEditError('Unable to reach the preview page for this action.');
+      return false;
+    } finally {
+      setIsApplyingEdit(false);
+    }
+  }, []);
+
   const handleDiscardPending = useCallback(async () => {
+    await runDirectEditAction({ type: 'reset_pending_selection', revert: true });
     await clearPendingSelection();
     setPending(null);
     setDraftInput('');
     setPendingLabel('');
-  }, []);
+    setInlineTextEditing(false);
+  }, [runDirectEditAction]);
+
+  const handleRenamePendingLabel = useCallback(
+    (label: string) => {
+      setPendingLabel(label);
+      if (!pending) return;
+      void updatePendingSelection({
+        target: {
+          ...pending.target,
+          label,
+        },
+      });
+    },
+    [pending],
+  );
 
   const handleSave = useCallback(
     async (opts: { inputMode: 'text' | 'voice'; rawInput: string; transcript?: string }) => {
@@ -113,15 +167,7 @@ export default function App() {
           rawInput: opts.rawInput,
           target: effectiveTarget,
         });
-        const diffs = pending.diffs ?? [];
-        const prompts = generatePrompts({
-          parsed,
-          target: effectiveTarget,
-          pageUrl: pending.pageUrl,
-          pageTitle: pending.pageTitle,
-          rawInput: opts.rawInput,
-          diffs,
-        });
+
         const item: RefinementItem = {
           id: uid(),
           pageUrl: pending.pageUrl,
@@ -131,101 +177,77 @@ export default function App() {
           rawInput: opts.rawInput,
           transcript: opts.transcript,
           parsed,
-          prompts,
-          diffs,
+          diffs: pending.diffs,
+          prompts: { claude: '', codex: '', generic: '' },
           createdAt: nowIso(),
         };
+        item.prompts = generatePromptsForItem(item);
+
         const next = await addItem(item);
         setItemsState(next);
         await clearPendingSelection();
+        await runDirectEditAction({ type: 'reset_pending_selection', revert: false });
         setPending(null);
         setPendingLabel('');
         setDraftInput('');
+        setInlineTextEditing(false);
       } finally {
         setIsSaving(false);
       }
     },
-    [pending, pendingLabel],
+    [pending, pendingLabel, runDirectEditAction],
   );
 
   const handleItemUpdate = useCallback(
     async (id: string, patch: Partial<RefinementItem>) => {
-      const next = await updateItem(id, patch);
+      const current = items.find((item) => item.id === id);
+      if (!current) return;
+
+      const nextItem: RefinementItem = {
+        ...current,
+        ...patch,
+        prompts: current.prompts,
+      };
+      nextItem.prompts = generatePromptsForItem(nextItem);
+
+      const next = await updateItem(id, nextItem);
       setItemsState(next);
     },
-    [],
+    [items],
   );
 
   const handleRegenerate = useCallback(
     async (id: string) => {
-      const item = items.find((i) => i.id === id);
+      const item = items.find((entry) => entry.id === id);
       if (!item) return;
-      const prompts = generatePrompts({
-        parsed: item.parsed,
-        target: item.target,
-        pageUrl: item.pageUrl,
-        pageTitle: item.pageTitle,
-        rawInput: item.rawInput,
-        diffs: item.diffs ?? [],
-      });
-      const next = await updateItem(id, { prompts });
-      setItemsState(next.map(ensureItemDiffs));
+      const next = await updateItem(id, { prompts: generatePromptsForItem(item) });
+      setItemsState(next);
     },
     [items],
   );
 
   const handleReparse = useCallback(
     async (id: string) => {
-      const item = items.find((i) => i.id === id);
+      const item = items.find((entry) => entry.id === id);
       if (!item) return;
+
       const parsed = await refinementParser.parse({
         rawInput: item.rawInput,
         target: item.target,
       });
-      const prompts = generatePrompts({
+
+      const nextItem: RefinementItem = {
+        ...item,
         parsed,
-        target: item.target,
-        pageUrl: item.pageUrl,
-        pageTitle: item.pageTitle,
-        rawInput: item.rawInput,
-        diffs: item.diffs ?? [],
-      });
-      const next = await updateItem(id, { parsed, prompts });
-      setItemsState(next.map(ensureItemDiffs));
+        prompts: item.prompts,
+      };
+      nextItem.prompts = generatePromptsForItem(nextItem);
+
+      const next = await updateItem(id, nextItem);
+      setItemsState(next);
     },
     [items],
   );
-
-  const persistPendingDiffs = useCallback(
-    async (nextDiffs: EditDiff[]) => {
-      if (!pending) return;
-      const nextPending: PendingSelection = { ...pending, diffs: nextDiffs };
-      setPending(nextPending);
-      await setPendingSelection(nextPending);
-    },
-    [pending],
-  );
-
-  const handleAddDiffs = useCallback(
-    async (added: EditDiff[]) => {
-      if (!pending) return;
-      await persistPendingDiffs([...(pending.diffs ?? []), ...added]);
-    },
-    [pending, persistPendingDiffs],
-  );
-
-  const handleRevertPendingDiff = useCallback(
-    async (diffId: string) => {
-      if (!pending) return;
-      await persistPendingDiffs((pending.diffs ?? []).filter((d) => d.id !== diffId));
-    },
-    [pending, persistPendingDiffs],
-  );
-
-  const handleClearPendingDiffs = useCallback(async () => {
-    if (!pending) return;
-    await persistPendingDiffs([]);
-  }, [pending, persistPendingDiffs]);
 
   const handleDelete = useCallback(async (id: string) => {
     const next = await deleteItem(id);
@@ -251,14 +273,18 @@ export default function App() {
             <ActiveTargetCard
               pending={pending}
               label={pendingLabel}
-              onRenameLabel={setPendingLabel}
+              onRenameLabel={handleRenamePendingLabel}
               onDiscard={handleDiscardPending}
-            />
-            <DirectEditPanel
-              pending={pending}
-              onAddDiffs={handleAddDiffs}
-              onRevertDiff={handleRevertPendingDiff}
-              onClearAll={handleClearPendingDiffs}
+              inlineTextEditing={inlineTextEditing}
+              isApplyingEdit={isApplyingEdit}
+              editError={editError}
+              onStartInlineTextEdit={() => void runDirectEditAction({ type: 'start_inline_text_edit' })}
+              onStopInlineTextEdit={() => void runDirectEditAction({ type: 'stop_inline_text_edit' })}
+              onHideSelected={() => void runDirectEditAction({ type: 'hide_selected' })}
+              onRemoveSelected={() => void runDirectEditAction({ type: 'remove_selected' })}
+              onReorderSelected={(direction) =>
+                void runDirectEditAction({ type: 'reorder_selected', direction })
+              }
             />
             <NoteEditor
               value={draftInput}
@@ -314,23 +340,15 @@ function EmptyState({
         <li>Open the AI-generated preview page in this tab.</li>
         <li>Enable <strong>Refine Mode</strong> (top right of this panel).</li>
         <li>Hover the page and click the region you want changed.</li>
-        <li>Describe the change — typed or voice — and generate a prompt.</li>
+        <li>Annotate it, then optionally apply direct preview edits before generating prompts.</li>
       </ol>
-      {!refineEnabled && (
+      {!refineEnabled ? (
         <button className="ifl-button ifl-button-primary" onClick={onEnable}>
           Enable Refine Mode
         </button>
-      )}
+      ) : null}
     </section>
   );
-}
-
-function ensureItemDiffs(item: RefinementItem): RefinementItem {
-  return item.diffs ? item : { ...item, diffs: [] };
-}
-
-function ensurePendingDiffs(p: PendingSelection): PendingSelection {
-  return p.diffs ? p : { ...p, diffs: [] };
 }
 
 async function queryRefineMode(): Promise<boolean> {

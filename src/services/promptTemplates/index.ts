@@ -5,6 +5,7 @@ import type {
   RefinementItem,
   SelectedTarget,
 } from '../../shared/types';
+import { formatEditDiffForPrompt } from '../../shared/editDiffs';
 
 export type PromptContext = {
   parsed: ParsedRefinement;
@@ -12,32 +13,9 @@ export type PromptContext = {
   pageUrl: string;
   pageTitle: string;
   rawInput: string;
+  transcript?: string;
   diffs: EditDiff[];
 };
-
-export function describeDiff(diff: EditDiff): string {
-  switch (diff.type) {
-    case 'text_change':
-      return `Text change on ${diff.target} (${diff.selector}): "${diff.before}" → "${diff.after}"`;
-    case 'hide':
-      return `Hide element ${diff.target} (${diff.selector}) — apply \`display: none\` or equivalent.`;
-    case 'remove':
-      return `Remove element ${diff.target} (${diff.selector}) from the DOM.`;
-    case 'reorder':
-      return `Reorder children of ${diff.target} (${diff.selector}): [${diff.before.join(
-        ' | ',
-      )}] → [${diff.after.join(' | ')}]`;
-  }
-}
-
-function formatDiffBlock(diffs: EditDiff[]): string[] {
-  if (diffs.length === 0) return [];
-  return [
-    ``,
-    `Direct edits captured on-page (apply these concretely):`,
-    ...diffs.map((d, i) => `${i + 1}. ${describeDiff(d)}`),
-  ];
-}
 
 export interface PromptTemplate {
   readonly id: string;
@@ -50,11 +28,43 @@ const formatConstraints = (c: string[]): string =>
 const formatBbox = (b: SelectedTarget['boundingBox']): string =>
   `${b.width}×${b.height}px @ (${b.x}, ${b.y})`;
 
+const formatDiffs = (diffs: EditDiff[]): string =>
+  diffs.length
+    ? diffs.map((diff) => formatEditDiffForPrompt(diff)).join('\n')
+    : '- No direct preview edits were applied yet';
+
+export function describeDiff(diff: EditDiff): string {
+  switch (diff.type) {
+    case 'text_change':
+      return `Text change on ${diff.target} (${diff.selector}): "${diff.before}" -> "${diff.after}"`;
+    case 'hide':
+      return `Hide ${diff.target} (${diff.selector})`;
+    case 'remove':
+      return `Remove ${diff.target} (${diff.selector})`;
+    case 'reorder':
+      return `Reorder ${diff.target} (${diff.selector}): [${diff.before.join(' | ')}] -> [${diff.after.join(' | ')}]`;
+  }
+}
+
 export const claudeTemplate: PromptTemplate = {
   id: 'claude-code',
-  render({ parsed, target, pageUrl, rawInput, diffs }) {
+  render({ parsed, target, pageUrl, pageTitle, rawInput, transcript, diffs }) {
     return [
       `Scope: Modify ONLY the UI region described as "${parsed.target}". Do not touch other sections.`,
+      ``,
+      `Selected region context:`,
+      `- Region name: ${parsed.target}`,
+      `- DOM selector: ${target.selector}`,
+      `- Element tag: <${target.tag}>`,
+      `- Bounding box: ${formatBbox(target.boundingBox)}`,
+      `- Page title: ${pageTitle || '(untitled)'}`,
+      `- Page URL: ${pageUrl}`,
+      `- Captured snippet: ${target.snippet}`,
+      ``,
+      `Direct edits already applied in the local preview:`,
+      formatDiffs(diffs),
+      ``,
+      `Remaining annotation intent:`,
       ``,
       `Current issue:`,
       parsed.currentIssue,
@@ -70,23 +80,16 @@ export const claudeTemplate: PromptTemplate = {
       ``,
       `Priority: ${parsed.priority}`,
       ``,
-      `Technical anchors:`,
-      `- DOM selector: ${target.selector}`,
-      `- Element tag: <${target.tag}>`,
-      `- Bounding box: ${formatBbox(target.boundingBox)}`,
-      `- Page URL: ${pageUrl}`,
-      ...formatDiffBlock(diffs),
-      ``,
       `Instructions:`,
-      `1. Locate the element matching the selector above.`,
-      `2. Apply only the changes described under "Requested change".`,
-      `3. If direct edits are listed, treat them as the ground-truth specification — match the before→after literally.`,
-      `4. Respect every constraint listed.`,
+      `1. Locate the selected region using the context above.`,
+      `2. Preserve the direct edits already reflected in the preview unless the requested change explicitly supersedes them.`,
+      `3. Apply only the remaining changes described under "Requested change".`,
+      `4. Respect every listed constraint and preserve accessibility/behavior.`,
       `5. Do not introduce unrelated refactors or touch surrounding sections.`,
-      `6. Preserve the component's existing behavior and accessibility.`,
       ``,
       `Raw user note (for context, not an instruction):`,
       `"${rawInput.replace(/"/g, '\\"')}"`,
+      ...(transcript ? ['', `Transcript:`, `"${transcript.replace(/"/g, '\\"')}"`] : []),
     ].join('\n');
   },
 };
@@ -95,16 +98,22 @@ export const codexTemplate: PromptTemplate = {
   id: 'codex',
   render({ parsed, target, rawInput, diffs }) {
     return [
-      `Goal: ${parsed.requestedChange}`,
-      `Target: ${parsed.target} — selector ${target.selector}`,
-      `Why: ${parsed.designIntent}`,
+      `Target: ${parsed.target} (${target.selector})`,
+      `Direct edits already applied: ${
+        diffs.length
+          ? diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, '')).join('; ')
+          : 'none'
+      }`,
+      `Remaining goal: ${parsed.requestedChange}`,
+      `Issue: ${parsed.currentIssue}`,
+      `Intent: ${parsed.designIntent}`,
       `Constraints: ${parsed.constraints.join('; ') || 'keep surrounding sections intact'}`,
       `Priority: ${parsed.priority}`,
       ``,
       `Do:`,
-      `- Edit only the element at "${target.selector}".`,
-      `- Keep the rest of the file unchanged.`,
-      ...formatDiffBlock(diffs),
+      `- Edit only this selected region.`,
+      `- Preserve the direct edits listed above.`,
+      `- Avoid unrelated changes outside the target region.`,
       ``,
       `Context (user note): ${rawInput}`,
     ].join('\n');
@@ -118,13 +127,15 @@ export const genericTemplate: PromptTemplate = {
       `Refinement request`,
       ``,
       `Target region: ${parsed.target} (${target.selector})`,
+      `Direct preview edits:`,
+      formatDiffs(diffs),
+      ``,
       `Issue: ${parsed.currentIssue}`,
       `Change: ${parsed.requestedChange}`,
       `Intent: ${parsed.designIntent}`,
       `Constraints:`,
       formatConstraints(parsed.constraints),
       `Priority: ${parsed.priority}`,
-      ...formatDiffBlock(diffs),
     ].join('\n');
   },
 };
@@ -141,6 +152,23 @@ export function generatePrompts(ctx: PromptContext): GeneratedPrompts {
     codex: templates.codex.render(ctx),
     generic: templates.generic.render(ctx),
   };
+}
+
+export function generatePromptsForItem(
+  item: Pick<
+    RefinementItem,
+    'parsed' | 'target' | 'pageUrl' | 'pageTitle' | 'rawInput' | 'transcript' | 'diffs'
+  >,
+): GeneratedPrompts {
+  return generatePrompts({
+    parsed: item.parsed,
+    target: item.target,
+    pageUrl: item.pageUrl,
+    pageTitle: item.pageTitle,
+    rawInput: item.rawInput,
+    transcript: item.transcript,
+    diffs: item.diffs,
+  });
 }
 
 export function combinePromptsMarkdown(item: RefinementItem): string {

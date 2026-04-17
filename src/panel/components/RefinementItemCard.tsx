@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { RefinementItem, ParsedRefinement } from '../../shared/types';
+import type { ParsedRefinement, RefinementItem } from '../../shared/types';
 import { combinePromptsMarkdown } from '../../services/promptTemplates';
 import { downloadBlob, exportItemJson } from '../../services/export';
-import { DiffList } from './DiffList';
+import { EditDiffList } from './EditDiffList';
 
 type Props = {
   item: RefinementItem;
@@ -92,9 +92,12 @@ export function RefinementItemCard({
                 rows={4}
               />
             ) : (
-              <p className="ifl-pre">
-                {item.rawInput || <em className="ifl-subtle">(empty)</em>}
-              </p>
+              <>
+                <p className="ifl-pre">
+                  {item.rawInput || <em className="ifl-subtle">(empty)</em>}
+                </p>
+                {item.transcript ? <p className="ifl-pre">Transcript: {item.transcript}</p> : null}
+              </>
             )}
           </div>
 
@@ -124,7 +127,9 @@ export function RefinementItemCard({
                 </div>
               ) : (
                 <div className="ifl-row-end">
-                  <button className="ifl-button-ghost" onClick={onReparse}>Re-parse</button>
+                  <button className="ifl-button-ghost" onClick={onReparse}>
+                    Re-parse
+                  </button>
                   <button className="ifl-button-ghost" onClick={() => setEditingParsed(true)}>
                     Edit
                   </button>
@@ -139,8 +144,23 @@ export function RefinementItemCard({
           </div>
 
           <div className="ifl-field">
-            <div className="ifl-label">Direct edits ({(item.diffs ?? []).length})</div>
-            <DiffList diffs={item.diffs ?? []} />
+            <div className="ifl-row-between">
+              <div className="ifl-label">Direct edit diffs</div>
+              <div className="ifl-subtle ifl-subtle-small">{item.diffs.length} captured</div>
+            </div>
+            <EditDiffList
+              diffs={item.diffs}
+              editable
+              emptyLabel="No direct edits were saved with this item."
+              onChangeDiff={(id, next) =>
+                onUpdate({
+                  diffs: item.diffs.map((diff) => (diff.id === id ? next : diff)),
+                })
+              }
+              onRemoveDiff={(id) =>
+                onUpdate({ diffs: item.diffs.filter((diff) => diff.id !== id) })
+              }
+            />
           </div>
 
           <div className="ifl-field">
@@ -193,7 +213,9 @@ export function RefinementItemCard({
           </div>
 
           <div className="ifl-row-end">
-            <button className="ifl-button-danger" onClick={onDelete}>Delete</button>
+            <button className="ifl-button-danger" onClick={onDelete}>
+              Delete
+            </button>
           </div>
         </div>
       )}
@@ -239,10 +261,7 @@ function ParsedEditor({
     <div className="ifl-form">
       <label>
         <span>Target</span>
-        <input
-          value={value.target}
-          onChange={(e) => update('target', e.currentTarget.value)}
-        />
+        <input value={value.target} onChange={(e) => update('target', e.currentTarget.value)} />
       </label>
       <label>
         <span>Current issue</span>
@@ -288,9 +307,7 @@ function ParsedEditor({
         <span>Priority</span>
         <select
           value={value.priority}
-          onChange={(e) =>
-            update('priority', e.currentTarget.value as ParsedRefinement['priority'])
-          }
+          onChange={(e) => update('priority', e.currentTarget.value as ParsedRefinement['priority'])}
         >
           <option value="low">low</option>
           <option value="medium">medium</option>
