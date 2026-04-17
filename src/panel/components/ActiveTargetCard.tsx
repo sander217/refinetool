@@ -1,7 +1,19 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ImageReferenceKind, PendingSelection } from '../../shared/types';
 import { hasImageIntent, hasVisibilityDiff } from '../../shared/editDiffs';
 import { EditDiffList } from './EditDiffList';
+
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8 MB cap
+
+type AttachImagePayload = {
+  referenceKind: ImageReferenceKind;
+  referenceUrl?: string;
+  referenceNote?: string;
+  dataUrl?: string;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+};
 
 type Props = {
   pending: PendingSelection;
@@ -16,11 +28,7 @@ type Props = {
   onHideSelected: () => void;
   onRemoveSelected: () => void;
   onReorderSelected: (direction: 'up' | 'down') => void;
-  onAttachImageReference: (payload: {
-    referenceKind: ImageReferenceKind;
-    referenceUrl?: string;
-    referenceNote?: string;
-  }) => void;
+  onAttachImageReference: (payload: AttachImagePayload) => void;
   onMarkImageRegenerate: (prompt?: string) => void;
   onClearImageIntent: () => void;
 };
@@ -154,17 +162,70 @@ function ImageIntentPanel({
   onMarkImageRegenerate: Props['onMarkImageRegenerate'];
   onClearImageIntent: Props['onClearImageIntent'];
 }) {
-  const [mode, setMode] = useState<'url' | 'figma' | 'note'>('url');
+  const [mode, setMode] = useState<ImageReferenceKind>('upload');
   const [url, setUrl] = useState('');
   const [note, setNote] = useState('');
   const [regeneratePrompt, setRegeneratePrompt] = useState('');
+  const [upload, setUpload] = useState<{
+    dataUrl: string;
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+  } | null>(null);
+  const [uploadError, setUploadError] = useState('');
+  const [isReading, setIsReading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const canAttach =
     (mode === 'note' && note.trim().length > 0) ||
-    ((mode === 'url' || mode === 'figma') && url.trim().length > 0);
+    ((mode === 'url' || mode === 'figma') && url.trim().length > 0) ||
+    (mode === 'upload' && upload !== null);
+
+  const handleFile = async (file: File | null) => {
+    setUploadError('');
+    if (!file) {
+      setUpload(null);
+      return;
+    }
+    if (!file.type.startsWith('image/')) {
+      setUploadError('That file is not an image.');
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadError(`File is too large (${formatBytes(file.size)}). Max is 8 MB.`);
+      return;
+    }
+    setIsReading(true);
+    try {
+      const dataUrl = await readAsDataURL(file);
+      setUpload({
+        dataUrl,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'image/*',
+      });
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Failed to read the file.');
+    } finally {
+      setIsReading(false);
+    }
+  };
 
   const submit = () => {
     if (!canAttach) return;
+    if (mode === 'upload') {
+      if (!upload) return;
+      onAttachImageReference({
+        referenceKind: 'upload',
+        dataUrl: upload.dataUrl,
+        fileName: upload.fileName,
+        fileSize: upload.fileSize,
+        mimeType: upload.mimeType,
+      });
+      setUpload(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     onAttachImageReference({
       referenceKind: mode,
       referenceUrl: mode === 'note' ? undefined : url,
@@ -194,40 +255,44 @@ function ImageIntentPanel({
         ) : null}
       </div>
       <p className="ifl-subtle ifl-subtle-small">
-        Capture replace or regenerate intent — the live image is unchanged; the intent lands in the diff list for downstream AI.
+        Upload or link a replacement — the live image swaps instantly for URL and upload. Figma / note are captured as intent only.
       </p>
 
       <div className="ifl-row">
-        <label className="ifl-chip">
-          <input
-            type="radio"
-            name="ifl-image-ref-kind"
-            checked={mode === 'url'}
-            onChange={() => setMode('url')}
-          />
-          URL
-        </label>
-        <label className="ifl-chip">
-          <input
-            type="radio"
-            name="ifl-image-ref-kind"
-            checked={mode === 'figma'}
-            onChange={() => setMode('figma')}
-          />
-          Figma
-        </label>
-        <label className="ifl-chip">
-          <input
-            type="radio"
-            name="ifl-image-ref-kind"
-            checked={mode === 'note'}
-            onChange={() => setMode('note')}
-          />
-          Note
-        </label>
+        <ModeChip label="Upload" kind="upload" active={mode} setActive={setMode} />
+        <ModeChip label="URL" kind="url" active={mode} setActive={setMode} />
+        <ModeChip label="Figma" kind="figma" active={mode} setActive={setMode} />
+        <ModeChip label="Note" kind="note" active={mode} setActive={setMode} />
       </div>
 
-      {mode === 'note' ? (
+      {mode === 'upload' ? (
+        <>
+          <div className="ifl-row">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="ifl-file-input"
+              onChange={(event) => void handleFile(event.currentTarget.files?.[0] ?? null)}
+              disabled={isApplyingEdit || isReading}
+            />
+          </div>
+          {upload ? (
+            <div className="ifl-upload-preview">
+              <img src={upload.dataUrl} alt={upload.fileName} />
+              <div>
+                <div className="ifl-upload-name" title={upload.fileName}>
+                  {upload.fileName}
+                </div>
+                <div className="ifl-subtle ifl-subtle-small">
+                  {formatBytes(upload.fileSize)} · {upload.mimeType}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {uploadError ? <p className="ifl-error">{uploadError}</p> : null}
+        </>
+      ) : mode === 'note' ? (
         <textarea
           className="ifl-textarea"
           rows={2}
@@ -247,10 +312,12 @@ function ImageIntentPanel({
       <div className="ifl-row">
         <button
           className="ifl-button"
-          disabled={isApplyingEdit || !canAttach}
+          disabled={isApplyingEdit || !canAttach || isReading}
           onClick={submit}
         >
-          Attach replace-image intent
+          {mode === 'upload' || mode === 'url'
+            ? 'Replace image in preview'
+            : 'Attach replace-image intent'}
         </button>
       </div>
 
@@ -273,4 +340,47 @@ function ImageIntentPanel({
       </div>
     </div>
   );
+}
+
+function ModeChip({
+  label,
+  kind,
+  active,
+  setActive,
+}: {
+  label: string;
+  kind: ImageReferenceKind;
+  active: ImageReferenceKind;
+  setActive: (kind: ImageReferenceKind) => void;
+}) {
+  return (
+    <label className="ifl-chip">
+      <input
+        type="radio"
+        name="ifl-image-ref-kind"
+        checked={active === kind}
+        onChange={() => setActive(kind)}
+      />
+      {label}
+    </label>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function readAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') resolve(result);
+      else reject(new Error('Unexpected reader result.'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader error'));
+    reader.readAsDataURL(file);
+  });
 }

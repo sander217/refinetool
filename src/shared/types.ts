@@ -59,7 +59,7 @@ export type ReorderDiff = EditDiffBase & {
 // Image intents are captured-only — they don't mutate the live DOM. They tell
 // a downstream execution system "replace this image" / "regenerate this image"
 // and carry the reference material the user attached.
-export type ImageReferenceKind = 'url' | 'figma' | 'note';
+export type ImageReferenceKind = 'url' | 'figma' | 'note' | 'upload';
 
 export type ImageReplaceIntentDiff = EditDiffBase & {
   type: 'image_replace_intent';
@@ -67,6 +67,15 @@ export type ImageReplaceIntentDiff = EditDiffBase & {
   referenceKind: ImageReferenceKind;
   referenceUrl?: string;
   referenceNote?: string;
+  // Populated for 'upload' — dataURL is assigned to <img>.src for live preview
+  // and kept in storage so preview persists. Stripped from prompt output.
+  dataUrl?: string;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  // True when the live <img> in the page has been mutated by this intent
+  // (URL + upload → true; figma + note → false).
+  appliedToDom?: boolean;
 };
 
 export type ImageRegenerateIntentDiff = EditDiffBase & {
@@ -117,6 +126,10 @@ export type DirectEditAction =
       referenceKind: ImageReferenceKind;
       referenceUrl?: string;
       referenceNote?: string;
+      dataUrl?: string;
+      fileName?: string;
+      fileSize?: number;
+      mimeType?: string;
     }
   | { type: 'mark_image_regenerate'; prompt?: string }
   | { type: 'clear_image_intent' }

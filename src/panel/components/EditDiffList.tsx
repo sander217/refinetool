@@ -210,6 +210,7 @@ function DiffEditor({
                 })
               }
             >
+              <option value="upload">upload</option>
               <option value="url">url</option>
               <option value="figma">figma</option>
               <option value="note">note</option>
@@ -226,6 +227,10 @@ function DiffEditor({
                 }
               />
             </label>
+          ) : draft.referenceKind === 'upload' ? (
+            <div className="ifl-subtle ifl-subtle-small">
+              Uploaded file: {draft.fileName ?? '(unnamed)'}. To swap the file, clear the intent on the target card and re-upload.
+            </div>
           ) : (
             <label>
               <span>Reference URL</span>

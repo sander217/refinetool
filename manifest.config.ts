@@ -24,6 +24,6 @@ export default defineManifest({
       all_frames: false,
     },
   ],
-  permissions: ['storage', 'sidePanel', 'activeTab', 'scripting'],
+  permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'activeTab', 'scripting'],
   host_permissions: ['<all_urls>'],
 });

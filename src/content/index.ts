@@ -36,6 +36,15 @@ if (!globalState.__iflContentScriptInitialized__) {
   let selectionLocked = false;
   let inlineTextMode = false;
   let textOriginals = new Map<HTMLElement, string>();
+  // Snapshot of any <img> we replaced for live preview, keyed by the img.
+  // Includes any <picture><source> srcsets we had to clear so the browser
+  // wouldn't override our direct src assignment.
+  type ImageSnapshot = {
+    src: string;
+    srcset: string | null;
+    pictureSources: { el: HTMLSourceElement; srcset: string | null }[];
+  };
+  let imageOriginals = new Map<HTMLImageElement, ImageSnapshot>();
   let originalParent: Element | null = null;
   let originalNextSibling: ChildNode | null = null;
   let originalDisplay = '';
@@ -260,11 +269,37 @@ if (!globalState.__iflContentScriptInitialized__) {
   const originalSrc = img?.currentSrc || img?.src || undefined;
   const targetLabel = activePending?.target.label ?? 'selected region';
 
+  const url = action.referenceUrl?.trim();
+  const note = action.referenceNote?.trim();
+  const dataUrl = action.dataUrl;
+
   const hasReference =
-    (action.referenceUrl && action.referenceUrl.trim().length > 0) ||
-    (action.referenceNote && action.referenceNote.trim().length > 0);
+    (action.referenceKind === 'upload' && dataUrl) ||
+    ((action.referenceKind === 'url' || action.referenceKind === 'figma') && url) ||
+    (action.referenceKind === 'note' && note);
+
   if (!hasReference) {
-    return { ok: false, error: 'Provide a URL, Figma link, or note before attaching.' };
+    return {
+      ok: false,
+      error: 'Provide a URL, Figma link, uploaded image, or note before attaching.',
+    };
+  }
+
+  // Restore any previous image replacement — a new attach always replaces the
+  // previous intent cleanly, even if the user switched reference kinds.
+  restoreReplacedImages();
+
+  let appliedToDom = false;
+  const livePreviewSrc =
+    action.referenceKind === 'upload'
+      ? dataUrl
+      : action.referenceKind === 'url'
+        ? url
+        : null;
+
+  if (livePreviewSrc && img) {
+    replaceImageSrc(img, livePreviewSrc);
+    appliedToDom = true;
   }
 
   updatePendingDiffs((diffs) => {
@@ -279,15 +314,73 @@ if (!globalState.__iflContentScriptInitialized__) {
       target: targetLabel,
       originalSrc,
       referenceKind: action.referenceKind,
-      referenceUrl: action.referenceUrl?.trim() || undefined,
-      referenceNote: action.referenceNote?.trim() || undefined,
+      referenceUrl: url || undefined,
+      referenceNote: note || undefined,
+      dataUrl: action.referenceKind === 'upload' ? dataUrl : undefined,
+      fileName: action.fileName,
+      fileSize: action.fileSize,
+      mimeType: action.mimeType,
+      appliedToDom,
       createdAt: existing?.createdAt ?? nowIso(),
     });
     return next;
   });
 
-  overlay?.showBanner('Replace-image intent captured — image itself is unchanged.');
+  overlay?.showBanner(
+    appliedToDom
+      ? 'Image replaced in preview — intent captured.'
+      : 'Replace-image intent captured (no live preview for this reference kind).',
+  );
   return { ok: true, pending: activePending };
+  }
+
+  function replaceImageSrc(img: HTMLImageElement, nextSrc: string): void {
+  if (!imageOriginals.has(img)) {
+    const snapshot: ImageSnapshot = {
+      src: img.getAttribute('src') ?? '',
+      srcset: img.getAttribute('srcset'),
+      pictureSources: [],
+    };
+    const picture = img.closest('picture');
+    if (picture) {
+      picture.querySelectorAll('source').forEach((source) => {
+        snapshot.pictureSources.push({
+          el: source,
+          srcset: source.getAttribute('srcset'),
+        });
+      });
+    }
+    imageOriginals.set(img, snapshot);
+  }
+
+  // Clear srcset / picture sources so the browser honors our direct .src.
+  img.removeAttribute('srcset');
+  const picture = img.closest('picture');
+  if (picture) {
+    picture.querySelectorAll('source').forEach((source) => {
+      source.removeAttribute('srcset');
+    });
+  }
+  img.src = nextSrc;
+  }
+
+  function restoreReplacedImages(): void {
+  for (const [img, snap] of imageOriginals.entries()) {
+    try {
+      if (!document.contains(img)) continue;
+      for (const { el, srcset } of snap.pictureSources) {
+        if (!document.contains(el)) continue;
+        if (srcset === null) el.removeAttribute('srcset');
+        else el.setAttribute('srcset', srcset);
+      }
+      if (snap.srcset === null) img.removeAttribute('srcset');
+      else img.setAttribute('srcset', snap.srcset);
+      img.src = snap.src;
+    } catch (err) {
+      console.warn('[IFL] image restore failed', err);
+    }
+  }
+  imageOriginals.clear();
   }
 
   function markImageRegenerate(
@@ -320,6 +413,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
 
   function clearImageIntent() {
+  restoreReplacedImages();
   updatePendingDiffs((diffs) =>
     diffs.filter(
       (diff) =>
@@ -652,6 +746,12 @@ if (!globalState.__iflContentScriptInitialized__) {
         originalParent.insertBefore(element, originalNextSibling);
       }
     }
+
+    restoreReplacedImages();
+  } else {
+    // Keep the current preview visible but drop our snapshot so a future
+    // pending session doesn't accidentally restore someone else's img.
+    imageOriginals.clear();
   }
 
   textOriginals.clear();

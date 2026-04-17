@@ -55,13 +55,13 @@ export function formatEditDiffForPrompt(diff: EditDiff): string {
   }
   if (diff.type === 'image_replace_intent') {
     const lines = [`- Replace image in ${diff.target}`];
-    if (diff.originalSrc) lines.push(`  Current src: ${diff.originalSrc}`);
+    if (diff.originalSrc) lines.push(`  Current src: ${sanitizeSrcForPrompt(diff.originalSrc)}`);
     lines.push(`  Reference: ${describeImageReference(diff)}`);
     return lines.join('\n');
   }
   if (diff.type === 'image_regenerate_intent') {
     const lines = [`- Regenerate image in ${diff.target}`];
-    if (diff.originalSrc) lines.push(`  Current src: ${diff.originalSrc}`);
+    if (diff.originalSrc) lines.push(`  Current src: ${sanitizeSrcForPrompt(diff.originalSrc)}`);
     if (diff.prompt) lines.push(`  Prompt hint: ${diff.prompt}`);
     return lines.join('\n');
   }
@@ -82,7 +82,25 @@ export function describeImageReference(diff: ImageReplaceIntentDiff): string {
   if (diff.referenceKind === 'note' && diff.referenceNote) {
     return `Note: ${diff.referenceNote}`;
   }
+  if (diff.referenceKind === 'upload') {
+    const size = diff.fileSize != null ? ` (${formatBytesHuman(diff.fileSize)})` : '';
+    const name = diff.fileName ?? 'uploaded image';
+    return `Uploaded file: ${name}${size}`;
+  }
   return 'reference not provided';
+}
+
+function formatBytesHuman(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+// Don't leak huge inline payloads into generated prompts.
+function sanitizeSrcForPrompt(src: string): string {
+  if (src.startsWith('data:')) return '(inline data URI)';
+  if (src.length > 300) return `${src.slice(0, 280)}…`;
+  return src;
 }
 
 export function imageRegeneratePrompt(
