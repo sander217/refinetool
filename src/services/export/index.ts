@@ -1,4 +1,5 @@
 import type { RefinementItem } from '../../shared/types';
+import { formatEditDiffForPrompt } from '../../shared/editDiffs';
 
 export function exportItemsJson(items: RefinementItem[]): string {
   return JSON.stringify(
@@ -37,6 +38,9 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       ...(it.parsed.constraints.length
         ? it.parsed.constraints.map((c) => `  - ${c}`)
         : ['  - _(none)_']),
+      ``,
+      `### Direct edit diffs`,
+      ...(it.diffs.length ? it.diffs.map((diff) => formatEditDiffForPrompt(diff)) : ['- _(none)_']),
       ``,
       `### Claude Code prompt`,
       '```text',

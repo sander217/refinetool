@@ -1,149 +1,161 @@
-# Interface Finetuning Layer — Chrome Extension (MVP)
+# Interface Finetuning Layer — Chrome Extension MVP
 
-A locally-installable Chrome extension that turns any AI-generated preview page into a
-precise **refinement workflow**:
+A locally-installable Chrome extension for refining AI-generated UI in two coordinated ways:
 
-1. Enable Refine Mode on the page.
-2. Hover + click a meaningful region (card, section, CTA, iframe block, …).
-3. Describe the change via typed note **or** voice recording.
-4. The extension converts the raw intent into structured refinement data.
-5. It generates copy-ready prompts for **Claude Code**, **Codex**, and a generic fallback.
-6. Paste the prompt back into your AI coding workflow and re-run.
+1. annotate a selected region with typed or voice notes
+2. make a few lightweight direct edits on the live preview
+3. capture those edits as structured diffs
+4. generate prompt-ready output for Claude Code and Codex
 
-This is an MVP: the transcription and parser are mocked behind swappable service
-interfaces. No cloud, no sync, no auto-code-modification — just the finetuning layer.
+This is still intentionally narrow. It is not trying to become Figma, Webflow, or a full visual editor.
 
 ---
 
-## 1. Setup
+## Setup
 
 ```bash
-cd /Users/sanderchen/Documents/Claude/Projects/interface-finetuning-extension
+cd /Users/sanderchen/Documents/Claude/Projects/interface-finetuning-extension/freeyourhand
 npm install
 npm run build
 ```
 
-The extension is emitted to `dist/`.
-
-## 2. Load unpacked in Chrome
-
-1. Open `chrome://extensions`.
-2. Toggle **Developer mode** (top-right).
-3. Click **Load unpacked** and pick the `dist/` folder produced above.
-4. Pin **Interface Finetuning Layer** to your toolbar.
-
-## 3. Use it
-
-1. Open an AI-generated preview page in any tab.
-2. Click the extension icon — the **side panel** opens.
-3. Toggle **Refine Mode** in the panel header.
-4. Hover over the page — the target region is highlighted.
-5. Click to select. Press **Esc** to cancel refine mode at any time.
-6. In the panel, type or record what should change.
-7. Click **Generate prompts**.
-8. Copy the Claude Code or Codex prompt and paste it back into your coding tool.
-9. Export the whole session as JSON or Markdown when done.
+Load `dist/` as an unpacked extension in `chrome://extensions`.
 
 ---
 
-## Architecture
+## Current workflow
 
-```
+1. Open an AI-generated preview page.
+2. Open the side panel.
+3. Enable **Refine Mode**.
+4. Hover and click a meaningful region.
+5. Add a typed note or voice note.
+6. Optionally apply direct preview edits:
+   - inline text editing
+   - hide/remove the selected block
+   - move the selected block up/down within its parent
+7. Review captured diffs in the panel.
+8. Generate and copy Claude Code or Codex prompts.
+
+---
+
+## Architecture That Already Existed
+
+The repo already had a good MVP split before the direct-edit upgrade:
+
+```text
 src/
-├── background/          Service worker — message hub + per-tab refine state
-├── content/             Overlay, hover highlight, meaningful-target picker, selector gen
+├── background/          Service worker message hub + per-tab refine mode
+├── content/             Region picking, selector generation, in-page overlay
 ├── panel/               React side panel UI
-│   └── components/
-├── shared/              Types, messages, small utils (id, nowIso, truncate)
-├── storage/             chrome.storage.local wrapper for items + pending selection
-└── services/
-    ├── transcription/   Speech-to-text interface (mock implementation included)
-    ├── parser/          Raw-text → structured refinement (rule-based mock)
-    ├── promptTemplates/ Claude Code / Codex / Generic prompt renderers
-    └── export/          JSON + Markdown serialization + download helper
+├── services/
+│   ├── parser/          Raw note -> structured refinement fields
+│   ├── promptTemplates/ Prompt renderers for Claude Code / Codex / generic
+│   ├── transcription/   Voice transcription abstraction (mocked)
+│   └── export/          Session export helpers
+├── shared/              Core types, messages, small utilities
+└── storage/             chrome.storage.local wrappers
 ```
 
-### Runtime flow
+The original runtime flow was:
 
-```
-[content] pointermove → pickMeaningfulTarget → overlay highlight
-[content] click       → buildSelectedTarget  → chrome.runtime.sendMessage TARGET_SELECTED
-[background] stores pending selection in chrome.storage.local
-[panel] subscribes to storage changes → loads pending selection
-[panel] user types / records → parser.parse() → promptTemplates.generatePrompts()
-[panel] saves RefinementItem to chrome.storage.local.refinementItems[]
+```text
+content selection -> background storage write -> panel loads pending target
+panel note input -> parser -> prompt templates -> stored refinement item
 ```
 
-### Service interfaces (swap mocks with real impls later)
-
-```ts
-// src/services/transcription
-export interface TranscriptionService {
-  readonly id: string;
-  transcribe(audio: Blob): Promise<TranscriptionResult>;
-}
-
-// src/services/parser
-export interface RefinementParser {
-  readonly id: string;
-  parse(input: ParserInput): Promise<ParsedRefinement>;
-}
-
-// src/services/promptTemplates
-export interface PromptTemplate {
-  readonly id: string;
-  render(ctx: PromptContext): string;
-}
-```
-
-Each service exports a concrete default (mock) that can be replaced with an API-backed
-implementation without touching call sites.
+That structure is still intact.
 
 ---
 
-## Known limitations (MVP)
+## What Was Added
 
-- **Cross-origin iframes** are treated as opaque blocks — the extension selects the
-  `<iframe>` element but cannot traverse into its document.
-- **Dynamic DOM** — if the page rerenders after selection, the stored selector may no
-  longer match. The user can re-select.
-- **Mock transcription** returns placeholder text; the user is expected to edit it
-  before saving. Swap `services/transcription` for a real Whisper/Deepgram client.
-- **Mock parser** is rule-based and coarse. Swap `services/parser` for an LLM-backed
-  implementation when ready.
-- **No cloud sync** — all data lives in `chrome.storage.local`, scoped to this profile.
-- **No Chrome Web Store packaging** — this is a dev-mode unpacked extension.
-- **Icons** intentionally omitted (Chrome shows a default puzzle icon); add PNGs to
-  `public/` and reference them under `action.default_icon` in `manifest.config.ts`.
+### 1. Diff-aware session model
+
+`shared/types.ts` now treats direct edits as part of the same refinement record:
+
+- `PendingSelection.diffs`
+- `RefinementItem.diffs`
+- `EditDiff` union with `text_change`, `hide`, `remove`, and `reorder`
+
+This keeps annotation intent and direct edits on one path instead of creating a parallel system.
+
+### 2. Direct preview editing in the content script
+
+The content layer now supports:
+
+- inline text editing for visible text nodes inside the selected region
+- hide/remove on the selected block
+- constrained reorder up/down within the selected block's parent
+- local diff capture while the preview updates immediately
+
+The background worker now routes panel edit actions back into the content script and persists updated pending selection state into `chrome.storage.local`.
+
+### 3. Diff-aware prompt generation
+
+`services/promptTemplates` still owns prompt rendering, but now includes:
+
+- target region context
+- parsed note fields
+- direct-edit diffs already applied in the preview
+- clearer scope/constraint instructions for Claude Code and Codex
+
+### 4. Panel upgrade
+
+The side panel now shows:
+
+- selected region metadata
+- direct preview action buttons
+- captured diff list on the pending selection
+- diff list on saved refinement items
+- diff editing/removal inside saved items
+- prompt regeneration on note/parsed/diff updates
+
+### 5. Export upgrade
+
+Markdown and JSON exports now include direct-edit diffs alongside annotations and prompts.
 
 ---
 
-## TODOs for future agents
+## Assumptions Made
 
-- `services/transcription/` — replace `MockTranscriber` with a real provider. Add a
-  settings screen in the panel to configure the provider (API key, model, endpoint).
-- `services/parser/` — swap `MockParser` for an LLM-backed parser. Consider streaming
-  the parse with function-call-style JSON output so fields populate progressively.
-- `services/promptTemplates/` — templates are currently plain string builders. If
-  template variants proliferate, consider a small template DSL or a handlebars-style
-  helper.
-- `content/dom.ts` — the "meaningful target" heuristic is tuned for typical web UIs
-  but misses uncommon frameworks. Consider supporting React DevTools-style fiber walks
-  or shadow DOM traversal.
-- **Selector robustness** — today we generate structural selectors (`main > section:nth-of-type(2) > …`).
-  Consider capturing a fingerprint (text hash, size, position) so re-selection works
-  after rerenders.
-- **Side panel → content script** hot-reload coordination — currently the panel
-  listens to storage changes; a push channel would feel snappier.
-- **Tests** — none yet. Start with the selector/labeler/parser, all of which are pure.
+- Direct edits are local preview assists, not production code mutations.
+- `remove` currently shares the same preview implementation as `hide` (`display: none`) but is stored as a distinct diff type for future expansion.
+- Reorder is intentionally constrained to moving the selected element one position up/down within its current parent.
+- Prompt accuracy matters more than building a sophisticated visual editing surface.
+- The existing parser/transcription mocks remain in place; this handoff focused on extending the architecture cleanly rather than swapping those services out.
 
 ---
 
-## Handoff notes
+## Known Limitations
 
-- Every module file is kept short and single-purpose on purpose — easier for another
-  coding agent (Codex, etc.) to extend.
-- Service interfaces are declared alongside their default mock. A real implementation
-  should drop into the same file or a sibling file and re-export from `index.ts`.
-- `shared/types.ts` is the single source of truth for the data model. Keep it in sync
-  with the `RefinementItem` contract when extending.
+- Inline text editing is limited to simple visible text elements inside the selected region. It is not a rich text editor and may flatten markup in some edge cases.
+- Saved refinement items store diffs, but editing those diffs in the panel does not replay them back onto the page DOM.
+- Discarding a pending selection attempts to revert current direct edits in-page, but previously saved edits are not replayed/reverted globally across the session.
+- `remove` is future-proofed in the data model but currently implemented visually the same as `hide`.
+- Reorder works only within the selected element's current DOM parent and depends on a stable sibling structure.
+- Cross-origin iframes are still opaque blocks.
+- Selector stability is still heuristic-based; heavy rerenders can invalidate a pending selection.
+- Voice transcription and note parsing are still mocked.
+
+---
+
+## Next Recommended Steps
+
+1. Add tests around diff generation, reorder behavior, prompt rendering, and DOM target helpers.
+2. Persist enough DOM fingerprints on diffs to support replay/revert of saved items across page reloads.
+3. Replace the mock parser with an LLM-backed structured parser.
+4. Replace the mock transcription service with a real provider.
+5. Improve selector robustness with fallback fingerprints beyond CSS selectors.
+6. Add a small undo surface for pending diffs directly in the active target card.
+7. Add page-level QA for complex framework DOMs and shadow-DOM edge cases.
+
+---
+
+## Handoff Notes
+
+- The direct-edit upgrade was added by extending the original architecture, not replacing it.
+- `shared/types.ts` remains the single source of truth for the refinement/session contract.
+- `services/promptTemplates` still owns prompt assembly; prompt logic was not moved into panel components.
+- The content script owns preview mutation behavior; the panel triggers actions but does not mutate the DOM directly.
+- The background worker remains the routing boundary between panel and content script.

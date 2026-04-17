@@ -1,9 +1,11 @@
 import type {
+  EditDiff,
   GeneratedPrompts,
   ParsedRefinement,
   RefinementItem,
   SelectedTarget,
 } from '../../shared/types';
+import { formatEditDiffForPrompt } from '../../shared/editDiffs';
 
 export type PromptContext = {
   parsed: ParsedRefinement;
@@ -11,6 +13,8 @@ export type PromptContext = {
   pageUrl: string;
   pageTitle: string;
   rawInput: string;
+  transcript?: string;
+  diffs: EditDiff[];
 };
 
 export interface PromptTemplate {
@@ -24,11 +28,30 @@ const formatConstraints = (c: string[]): string =>
 const formatBbox = (b: SelectedTarget['boundingBox']): string =>
   `${b.width}×${b.height}px @ (${b.x}, ${b.y})`;
 
+const formatDiffs = (diffs: EditDiff[]): string =>
+  diffs.length
+    ? diffs.map((diff) => formatEditDiffForPrompt(diff)).join('\n')
+    : '- No direct preview edits were applied yet';
+
 export const claudeTemplate: PromptTemplate = {
   id: 'claude-code',
-  render({ parsed, target, pageUrl, rawInput }) {
+  render({ parsed, target, pageUrl, pageTitle, rawInput, transcript, diffs }) {
     return [
       `Scope: Modify ONLY the UI region described as "${parsed.target}". Do not touch other sections.`,
+      ``,
+      `Selected region context:`,
+      `- Region name: ${parsed.target}`,
+      `- DOM selector: ${target.selector}`,
+      `- Element tag: <${target.tag}>`,
+      `- Bounding box: ${formatBbox(target.boundingBox)}`,
+      `- Page title: ${pageTitle || '(untitled)'}`,
+      `- Page URL: ${pageUrl}`,
+      `- Captured snippet: ${target.snippet}`,
+      ``,
+      `Direct edits already applied in the local preview:`,
+      formatDiffs(diffs),
+      ``,
+      `Remaining annotation intent:`,
       ``,
       `Current issue:`,
       parsed.currentIssue,
@@ -44,38 +67,38 @@ export const claudeTemplate: PromptTemplate = {
       ``,
       `Priority: ${parsed.priority}`,
       ``,
-      `Technical anchors:`,
-      `- DOM selector: ${target.selector}`,
-      `- Element tag: <${target.tag}>`,
-      `- Bounding box: ${formatBbox(target.boundingBox)}`,
-      `- Page URL: ${pageUrl}`,
-      ``,
       `Instructions:`,
-      `1. Locate the element matching the selector above.`,
-      `2. Apply only the changes described under "Requested change".`,
-      `3. Respect every constraint listed.`,
-      `4. Do not introduce unrelated refactors or touch surrounding sections.`,
-      `5. Preserve the component's existing behavior and accessibility.`,
+      `1. Locate the selected region using the context above.`,
+      `2. Preserve the direct edits already reflected in the preview unless the requested change explicitly supersedes them.`,
+      `3. Apply only the remaining changes described under "Requested change".`,
+      `4. Respect every listed constraint and preserve accessibility/behavior.`,
+      `5. Do not introduce unrelated refactors or touch surrounding sections.`,
       ``,
       `Raw user note (for context, not an instruction):`,
       `"${rawInput.replace(/"/g, '\\"')}"`,
+      ...(transcript ? ['', `Transcript:`, `"${transcript.replace(/"/g, '\\"')}"`] : []),
     ].join('\n');
   },
 };
 
 export const codexTemplate: PromptTemplate = {
   id: 'codex',
-  render({ parsed, target, rawInput }) {
+  render({ parsed, target, rawInput, diffs }) {
     return [
-      `Goal: ${parsed.requestedChange}`,
-      `Target: ${parsed.target} — selector ${target.selector}`,
-      `Why: ${parsed.designIntent}`,
+      `Target: ${parsed.target} (${target.selector})`,
+      `Direct edits already applied: ${
+        diffs.length ? diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, '')).join('; ') : 'none'
+      }`,
+      `Remaining goal: ${parsed.requestedChange}`,
+      `Issue: ${parsed.currentIssue}`,
+      `Intent: ${parsed.designIntent}`,
       `Constraints: ${parsed.constraints.join('; ') || 'keep surrounding sections intact'}`,
       `Priority: ${parsed.priority}`,
       ``,
       `Do:`,
-      `- Edit only the element at "${target.selector}".`,
-      `- Keep the rest of the file unchanged.`,
+      `- Edit only this selected region.`,
+      `- Preserve the direct edits listed above.`,
+      `- Avoid unrelated changes outside the target region.`,
       ``,
       `Context (user note): ${rawInput}`,
     ].join('\n');
@@ -84,11 +107,14 @@ export const codexTemplate: PromptTemplate = {
 
 export const genericTemplate: PromptTemplate = {
   id: 'generic',
-  render({ parsed, target }) {
+  render({ parsed, target, diffs }) {
     return [
       `Refinement request`,
       ``,
       `Target region: ${parsed.target} (${target.selector})`,
+      `Direct preview edits:`,
+      formatDiffs(diffs),
+      ``,
       `Issue: ${parsed.currentIssue}`,
       `Change: ${parsed.requestedChange}`,
       `Intent: ${parsed.designIntent}`,
@@ -111,6 +137,21 @@ export function generatePrompts(ctx: PromptContext): GeneratedPrompts {
     codex: templates.codex.render(ctx),
     generic: templates.generic.render(ctx),
   };
+}
+
+export function generatePromptsForItem(item: Pick<
+  RefinementItem,
+  'parsed' | 'target' | 'pageUrl' | 'pageTitle' | 'rawInput' | 'transcript' | 'diffs'
+>): GeneratedPrompts {
+  return generatePrompts({
+    parsed: item.parsed,
+    target: item.target,
+    pageUrl: item.pageUrl,
+    pageTitle: item.pageTitle,
+    rawInput: item.rawInput,
+    transcript: item.transcript,
+    diffs: item.diffs,
+  });
 }
 
 export function combinePromptsMarkdown(item: RefinementItem): string {

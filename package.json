@@ -1,6 +1,6 @@
 {
   "name": "interface-finetuning-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Chrome extension MVP that lets users refine AI-generated UIs region-by-region and export copy-ready prompts for Claude Code and Codex.",
   "private": true,
   "type": "module",

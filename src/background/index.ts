@@ -28,7 +28,12 @@ async function setRefineMode(tabId: number, enabled: boolean) {
     .sendMessage({ type: 'REFINE_MODE_CHANGED', tabId, enabled } satisfies ExtensionMessage)
     .catch(() => {
       /* no active listener — fine */
-    });
+  });
+}
+
+async function getActiveTabId(): Promise<number | null> {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return tab?.id ?? null;
 }
 
 chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
@@ -50,8 +55,7 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
   }
 
   if (msg.type === 'GET_REFINE_MODE') {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, ([tab]) => {
-      const tabId = tab?.id;
+    void getActiveTabId().then((tabId) => {
       const enabled = typeof tabId === 'number' ? refineModeByTab.get(tabId) ?? false : false;
       sendResponse({ enabled } satisfies RefineModeResponse);
     });
@@ -75,6 +79,38 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
         }
         sendResponse({ ok: true });
       });
+    return true;
+  }
+
+  if (msg.type === 'APPLY_DIRECT_EDIT') {
+    void getActiveTabId().then(async (tabId) => {
+      if (tabId == null) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+
+      try {
+        const result = (await chrome.tabs.sendMessage(tabId, msg)) as
+          | { ok: boolean; pending?: unknown; error?: string }
+          | undefined;
+
+        if (!result?.ok) {
+          sendResponse({ ok: false, error: result?.error ?? 'Edit action failed' });
+          return;
+        }
+
+        if (msg.action.type === 'reset_pending_selection') {
+          await chrome.storage.local.remove(STORAGE_KEYS.pending);
+        } else if (result.pending) {
+          await chrome.storage.local.set({ [STORAGE_KEYS.pending]: result.pending });
+        }
+
+        sendResponse(result);
+      } catch (err) {
+        console.warn('[IFL] APPLY_DIRECT_EDIT failed', err);
+        sendResponse({ ok: false, error: 'Unable to reach the page content script.' });
+      }
+    });
     return true;
   }
 

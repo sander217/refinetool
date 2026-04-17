@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import type { RefinementItem, ParsedRefinement } from '../../shared/types';
+import type { ParsedRefinement, RefinementItem } from '../../shared/types';
 import { combinePromptsMarkdown } from '../../services/promptTemplates';
 import { downloadBlob, exportItemJson } from '../../services/export';
+import { EditDiffList } from './EditDiffList';
 
 type Props = {
   item: RefinementItem;
@@ -91,9 +92,14 @@ export function RefinementItemCard({
                 rows={4}
               />
             ) : (
-              <p className="ifl-pre">
-                {item.rawInput || <em className="ifl-subtle">(empty)</em>}
-              </p>
+              <>
+                <p className="ifl-pre">
+                  {item.rawInput || <em className="ifl-subtle">(empty)</em>}
+                </p>
+                {item.transcript ? (
+                  <p className="ifl-pre">Transcript: {item.transcript}</p>
+                ) : null}
+              </>
             )}
           </div>
 
@@ -135,6 +141,26 @@ export function RefinementItemCard({
             ) : (
               <ParsedView parsed={item.parsed} />
             )}
+          </div>
+
+          <div className="ifl-field">
+            <div className="ifl-row-between">
+              <div className="ifl-label">Direct edit diffs</div>
+              <div className="ifl-subtle ifl-subtle-small">{item.diffs.length} captured</div>
+            </div>
+            <EditDiffList
+              diffs={item.diffs}
+              editable
+              emptyLabel="No direct edits were saved with this item."
+              onChangeDiff={(id, next) =>
+                onUpdate({
+                  diffs: item.diffs.map((diff) => (diff.id === id ? next : diff)),
+                })
+              }
+              onRemoveDiff={(id) =>
+                onUpdate({ diffs: item.diffs.filter((diff) => diff.id !== id) })
+              }
+            />
           </div>
 
           <div className="ifl-field">
@@ -219,13 +245,7 @@ function ParsedView({ parsed }: { parsed: ParsedRefinement }) {
   );
 }
 
-function ParsedEditor({
-  value,
-  onChange,
-}: {
-  value: ParsedRefinement;
-  onChange: (v: ParsedRefinement) => void;
-}) {
+function ParsedEditor({ value, onChange }: { value: ParsedRefinement; onChange: (v: ParsedRefinement) => void }) {
   const update = <K extends keyof ParsedRefinement>(key: K, v: ParsedRefinement[K]) =>
     onChange({ ...value, [key]: v });
 

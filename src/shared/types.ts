@@ -32,6 +32,36 @@ export type GeneratedPrompts = {
   generic: string;
 };
 
+export type TextChangeDiff = {
+  id: string;
+  type: 'text_change';
+  target: string;
+  before: string;
+  after: string;
+};
+
+export type RemoveDiff = {
+  id: string;
+  type: 'remove';
+  target: string;
+};
+
+export type HideDiff = {
+  id: string;
+  type: 'hide';
+  target: string;
+};
+
+export type ReorderDiff = {
+  id: string;
+  type: 'reorder';
+  target: string;
+  before: string[];
+  after: string[];
+};
+
+export type EditDiff = TextChangeDiff | RemoveDiff | HideDiff | ReorderDiff;
+
 export type RefinementItem = {
   id: string;
   pageUrl: string;
@@ -41,6 +71,7 @@ export type RefinementItem = {
   rawInput: string;
   transcript?: string;
   parsed: ParsedRefinement;
+  diffs: EditDiff[];
   prompts: GeneratedPrompts;
   createdAt: string;
 };
@@ -49,8 +80,17 @@ export type PendingSelection = {
   pageUrl: string;
   pageTitle: string;
   target: SelectedTarget;
+  diffs: EditDiff[];
   capturedAt: string;
 };
+
+export type DirectEditAction =
+  | { type: 'start_inline_text_edit' }
+  | { type: 'stop_inline_text_edit' }
+  | { type: 'hide_selected' }
+  | { type: 'remove_selected' }
+  | { type: 'reorder_selected'; direction: 'up' | 'down' }
+  | { type: 'reset_pending_selection'; revert?: boolean };
 
 export const STORAGE_KEYS = {
   items: 'iflRefinementItems',
