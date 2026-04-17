@@ -32,6 +32,32 @@ export type GeneratedPrompts = {
   generic: string;
 };
 
+export type BlockAction = 'hide' | 'remove' | 'move_up' | 'move_down';
+
+type EditDiffBase = {
+  id: string;
+  selector: string;
+  target: string;
+  createdAt: string;
+};
+
+export type TextChangeDiff = EditDiffBase & {
+  type: 'text_change';
+  before: string;
+  after: string;
+};
+
+export type HideDiff = EditDiffBase & { type: 'hide' };
+export type RemoveDiff = EditDiffBase & { type: 'remove' };
+
+export type ReorderDiff = EditDiffBase & {
+  type: 'reorder';
+  before: string[];
+  after: string[];
+};
+
+export type EditDiff = TextChangeDiff | HideDiff | RemoveDiff | ReorderDiff;
+
 export type RefinementItem = {
   id: string;
   pageUrl: string;
@@ -42,6 +68,7 @@ export type RefinementItem = {
   transcript?: string;
   parsed: ParsedRefinement;
   prompts: GeneratedPrompts;
+  diffs: EditDiff[];
   createdAt: string;
 };
 
@@ -50,6 +77,7 @@ export type PendingSelection = {
   pageTitle: string;
   target: SelectedTarget;
   capturedAt: string;
+  diffs: EditDiff[];
 };
 
 export const STORAGE_KEYS = {

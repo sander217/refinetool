@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ExtensionMessage, RefineModeResponse } from '../shared/messages';
 import type {
+  EditDiff,
   PendingSelection,
   RefinementItem,
 } from '../shared/types';
@@ -12,6 +13,7 @@ import {
   getItems,
   getPendingSelection,
   setItems,
+  setPendingSelection,
   subscribeToStorage,
   updateItem,
 } from '../storage';
@@ -24,6 +26,7 @@ import { ActiveTargetCard } from './components/ActiveTargetCard';
 import { NoteEditor } from './components/NoteEditor';
 import { RefinementItemCard } from './components/RefinementItemCard';
 import { ExportBar } from './components/ExportBar';
+import { DirectEditPanel } from './components/DirectEditPanel';
 
 export default function App() {
   const [refineEnabled, setRefineEnabled] = useState(false);
@@ -40,8 +43,8 @@ export default function App() {
     void Promise.all([getItems(), getPendingSelection(), queryRefineMode()]).then(
       ([storedItems, storedPending, enabled]) => {
         if (cancelled) return;
-        setItemsState(storedItems);
-        setPending(storedPending);
+        setItemsState(storedItems.map(ensureItemDiffs));
+        setPending(storedPending ? ensurePendingDiffs(storedPending) : null);
         if (storedPending) setPendingLabel(storedPending.target.label);
         setRefineEnabled(enabled);
       },
@@ -55,13 +58,14 @@ export default function App() {
   useEffect(() => {
     return subscribeToStorage((changes) => {
       if (STORAGE_KEYS.pending in changes) {
-        const next = changes[STORAGE_KEYS.pending].newValue as PendingSelection | undefined;
-        setPending(next ?? null);
+        const raw = changes[STORAGE_KEYS.pending].newValue as PendingSelection | undefined;
+        const next = raw ? ensurePendingDiffs(raw) : null;
+        setPending(next);
         if (next) setPendingLabel(next.target.label);
       }
       if (STORAGE_KEYS.items in changes) {
-        const next = changes[STORAGE_KEYS.items].newValue as RefinementItem[] | undefined;
-        setItemsState(next ?? []);
+        const raw = changes[STORAGE_KEYS.items].newValue as RefinementItem[] | undefined;
+        setItemsState((raw ?? []).map(ensureItemDiffs));
       }
     });
   }, []);
@@ -109,12 +113,14 @@ export default function App() {
           rawInput: opts.rawInput,
           target: effectiveTarget,
         });
+        const diffs = pending.diffs ?? [];
         const prompts = generatePrompts({
           parsed,
           target: effectiveTarget,
           pageUrl: pending.pageUrl,
           pageTitle: pending.pageTitle,
           rawInput: opts.rawInput,
+          diffs,
         });
         const item: RefinementItem = {
           id: uid(),
@@ -126,6 +132,7 @@ export default function App() {
           transcript: opts.transcript,
           parsed,
           prompts,
+          diffs,
           createdAt: nowIso(),
         };
         const next = await addItem(item);
@@ -159,9 +166,10 @@ export default function App() {
         pageUrl: item.pageUrl,
         pageTitle: item.pageTitle,
         rawInput: item.rawInput,
+        diffs: item.diffs ?? [],
       });
       const next = await updateItem(id, { prompts });
-      setItemsState(next);
+      setItemsState(next.map(ensureItemDiffs));
     },
     [items],
   );
@@ -180,12 +188,44 @@ export default function App() {
         pageUrl: item.pageUrl,
         pageTitle: item.pageTitle,
         rawInput: item.rawInput,
+        diffs: item.diffs ?? [],
       });
       const next = await updateItem(id, { parsed, prompts });
-      setItemsState(next);
+      setItemsState(next.map(ensureItemDiffs));
     },
     [items],
   );
+
+  const persistPendingDiffs = useCallback(
+    async (nextDiffs: EditDiff[]) => {
+      if (!pending) return;
+      const nextPending: PendingSelection = { ...pending, diffs: nextDiffs };
+      setPending(nextPending);
+      await setPendingSelection(nextPending);
+    },
+    [pending],
+  );
+
+  const handleAddDiffs = useCallback(
+    async (added: EditDiff[]) => {
+      if (!pending) return;
+      await persistPendingDiffs([...(pending.diffs ?? []), ...added]);
+    },
+    [pending, persistPendingDiffs],
+  );
+
+  const handleRevertPendingDiff = useCallback(
+    async (diffId: string) => {
+      if (!pending) return;
+      await persistPendingDiffs((pending.diffs ?? []).filter((d) => d.id !== diffId));
+    },
+    [pending, persistPendingDiffs],
+  );
+
+  const handleClearPendingDiffs = useCallback(async () => {
+    if (!pending) return;
+    await persistPendingDiffs([]);
+  }, [pending, persistPendingDiffs]);
 
   const handleDelete = useCallback(async (id: string) => {
     const next = await deleteItem(id);
@@ -213,6 +253,12 @@ export default function App() {
               label={pendingLabel}
               onRenameLabel={setPendingLabel}
               onDiscard={handleDiscardPending}
+            />
+            <DirectEditPanel
+              pending={pending}
+              onAddDiffs={handleAddDiffs}
+              onRevertDiff={handleRevertPendingDiff}
+              onClearAll={handleClearPendingDiffs}
             />
             <NoteEditor
               value={draftInput}
@@ -277,6 +323,14 @@ function EmptyState({
       )}
     </section>
   );
+}
+
+function ensureItemDiffs(item: RefinementItem): RefinementItem {
+  return item.diffs ? item : { ...item, diffs: [] };
+}
+
+function ensurePendingDiffs(p: PendingSelection): PendingSelection {
+  return p.diffs ? p : { ...p, diffs: [] };
 }
 
 async function queryRefineMode(): Promise<boolean> {

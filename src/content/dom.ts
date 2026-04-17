@@ -176,7 +176,10 @@ export function labelTarget(el: Element): string {
   }
 
   const meaningful = matchMeaningfulClass(el);
-  if (meaningful) return `${titleCase(meaningful)} block`;
+  if (meaningful) {
+    const inner = firstInnerIdentifier(el);
+    return inner ? `${titleCase(meaningful)}: ${inner}` : `${titleCase(meaningful)} block`;
+  }
 
   const heading = el.querySelector('h1, h2, h3');
   const headingText = heading?.textContent?.trim().slice(0, 40);
@@ -203,6 +206,24 @@ function titleCase(s: string): string {
 
 function textContent(el: Element, max: number): string {
   return (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, max);
+}
+
+function firstInnerIdentifier(el: Element): string | null {
+  const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
+  const headingText = heading?.textContent?.trim().replace(/\s+/g, ' ').slice(0, 40);
+  if (headingText) return headingText;
+  const labelled = el.querySelector('[aria-label], [data-label], [data-testid]');
+  const labelAttr =
+    labelled?.getAttribute('aria-label') ||
+    labelled?.getAttribute('data-label') ||
+    labelled?.getAttribute('data-testid');
+  if (labelAttr) return labelAttr.slice(0, 40);
+  const firstBtn = el.querySelector('button, a');
+  const btnText = firstBtn?.textContent?.trim().replace(/\s+/g, ' ').slice(0, 30);
+  if (btnText) return btnText;
+  const direct = (el.textContent || '').trim().replace(/\s+/g, ' ');
+  if (direct.length > 0 && direct.length < 60) return direct.slice(0, 40);
+  return null;
 }
 
 export function getBoundingBox(el: Element): BoundingBox {

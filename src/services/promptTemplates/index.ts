@@ -1,4 +1,5 @@
 import type {
+  EditDiff,
   GeneratedPrompts,
   ParsedRefinement,
   RefinementItem,
@@ -11,7 +12,32 @@ export type PromptContext = {
   pageUrl: string;
   pageTitle: string;
   rawInput: string;
+  diffs: EditDiff[];
 };
+
+export function describeDiff(diff: EditDiff): string {
+  switch (diff.type) {
+    case 'text_change':
+      return `Text change on ${diff.target} (${diff.selector}): "${diff.before}" → "${diff.after}"`;
+    case 'hide':
+      return `Hide element ${diff.target} (${diff.selector}) — apply \`display: none\` or equivalent.`;
+    case 'remove':
+      return `Remove element ${diff.target} (${diff.selector}) from the DOM.`;
+    case 'reorder':
+      return `Reorder children of ${diff.target} (${diff.selector}): [${diff.before.join(
+        ' | ',
+      )}] → [${diff.after.join(' | ')}]`;
+  }
+}
+
+function formatDiffBlock(diffs: EditDiff[]): string[] {
+  if (diffs.length === 0) return [];
+  return [
+    ``,
+    `Direct edits captured on-page (apply these concretely):`,
+    ...diffs.map((d, i) => `${i + 1}. ${describeDiff(d)}`),
+  ];
+}
 
 export interface PromptTemplate {
   readonly id: string;
@@ -26,7 +52,7 @@ const formatBbox = (b: SelectedTarget['boundingBox']): string =>
 
 export const claudeTemplate: PromptTemplate = {
   id: 'claude-code',
-  render({ parsed, target, pageUrl, rawInput }) {
+  render({ parsed, target, pageUrl, rawInput, diffs }) {
     return [
       `Scope: Modify ONLY the UI region described as "${parsed.target}". Do not touch other sections.`,
       ``,
@@ -49,13 +75,15 @@ export const claudeTemplate: PromptTemplate = {
       `- Element tag: <${target.tag}>`,
       `- Bounding box: ${formatBbox(target.boundingBox)}`,
       `- Page URL: ${pageUrl}`,
+      ...formatDiffBlock(diffs),
       ``,
       `Instructions:`,
       `1. Locate the element matching the selector above.`,
       `2. Apply only the changes described under "Requested change".`,
-      `3. Respect every constraint listed.`,
-      `4. Do not introduce unrelated refactors or touch surrounding sections.`,
-      `5. Preserve the component's existing behavior and accessibility.`,
+      `3. If direct edits are listed, treat them as the ground-truth specification — match the before→after literally.`,
+      `4. Respect every constraint listed.`,
+      `5. Do not introduce unrelated refactors or touch surrounding sections.`,
+      `6. Preserve the component's existing behavior and accessibility.`,
       ``,
       `Raw user note (for context, not an instruction):`,
       `"${rawInput.replace(/"/g, '\\"')}"`,
@@ -65,7 +93,7 @@ export const claudeTemplate: PromptTemplate = {
 
 export const codexTemplate: PromptTemplate = {
   id: 'codex',
-  render({ parsed, target, rawInput }) {
+  render({ parsed, target, rawInput, diffs }) {
     return [
       `Goal: ${parsed.requestedChange}`,
       `Target: ${parsed.target} — selector ${target.selector}`,
@@ -76,6 +104,7 @@ export const codexTemplate: PromptTemplate = {
       `Do:`,
       `- Edit only the element at "${target.selector}".`,
       `- Keep the rest of the file unchanged.`,
+      ...formatDiffBlock(diffs),
       ``,
       `Context (user note): ${rawInput}`,
     ].join('\n');
@@ -84,7 +113,7 @@ export const codexTemplate: PromptTemplate = {
 
 export const genericTemplate: PromptTemplate = {
   id: 'generic',
-  render({ parsed, target }) {
+  render({ parsed, target, diffs }) {
     return [
       `Refinement request`,
       ``,
@@ -95,6 +124,7 @@ export const genericTemplate: PromptTemplate = {
       `Constraints:`,
       formatConstraints(parsed.constraints),
       `Priority: ${parsed.priority}`,
+      ...formatDiffBlock(diffs),
     ].join('\n');
   },
 };

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { RefinementItem, ParsedRefinement } from '../../shared/types';
 import { combinePromptsMarkdown } from '../../services/promptTemplates';
 import { downloadBlob, exportItemJson } from '../../services/export';
+import { DiffList } from './DiffList';
 
 type Props = {
   item: RefinementItem;
@@ -135,6 +136,11 @@ export function RefinementItemCard({
             ) : (
               <ParsedView parsed={item.parsed} />
             )}
+          </div>
+
+          <div className="ifl-field">
+            <div className="ifl-label">Direct edits ({(item.diffs ?? []).length})</div>
+            <DiffList diffs={item.diffs ?? []} />
           </div>
 
           <div className="ifl-field">

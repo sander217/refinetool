@@ -2,6 +2,13 @@ import type { ExtensionMessage } from '../shared/messages';
 import { buildSelectedTarget, pickMeaningfulTarget } from './dom';
 import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
 import { nowIso } from '../shared/utils';
+import {
+  applyBlockAction,
+  clearAllEdits,
+  endTextEdit,
+  revertDiff,
+  startTextEdit,
+} from './edits';
 
 let refineEnabled = false;
 let overlay: OverlayHandles | null = null;
@@ -54,6 +61,7 @@ function onClickCapture(event: MouseEvent) {
     pageTitle: document.title,
     target,
     capturedAt: nowIso(),
+    diffs: [],
   };
 
   chrome.runtime
@@ -101,5 +109,27 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendRespon
   if (msg.type === 'SET_REFINE_MODE') {
     setRefineEnabled(msg.enabled);
     sendResponse({ ok: true });
+    return;
+  }
+  if (msg.type === 'START_TEXT_EDIT') {
+    sendResponse(startTextEdit(msg.selector));
+    return;
+  }
+  if (msg.type === 'END_TEXT_EDIT') {
+    sendResponse({ ok: true, ...endTextEdit(msg.commit) });
+    return;
+  }
+  if (msg.type === 'BLOCK_ACTION') {
+    sendResponse(applyBlockAction(msg.selector, msg.action));
+    return;
+  }
+  if (msg.type === 'REVERT_DIFF') {
+    sendResponse({ ok: revertDiff(msg.diffId) });
+    return;
+  }
+  if (msg.type === 'CLEAR_ALL_EDITS') {
+    clearAllEdits();
+    sendResponse({ ok: true });
+    return;
   }
 });

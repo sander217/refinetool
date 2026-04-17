@@ -1,4 +1,5 @@
 import type { RefinementItem } from '../../shared/types';
+import { describeDiff } from '../promptTemplates';
 
 export function exportItemsJson(items: RefinementItem[]): string {
   return JSON.stringify(
@@ -29,6 +30,11 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       it.rawInput || '_(empty)_',
       ``,
       it.transcript ? `### Transcript\n${it.transcript}\n` : '',
+      `### Direct edits`,
+      ...(it.diffs.length
+        ? it.diffs.map((d, i) => `${i + 1}. ${describeDiff(d)}`)
+        : ['_(none)_']),
+      ``,
       `### Parsed`,
       `- Issue: ${it.parsed.currentIssue}`,
       `- Change: ${it.parsed.requestedChange}`,
