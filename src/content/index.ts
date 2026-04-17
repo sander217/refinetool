@@ -13,33 +13,40 @@ import {
 } from './dom';
 import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
 
-let refineEnabled = false;
-let overlay: OverlayHandles | null = null;
-let currentHover: Element | null = null;
+const globalState = globalThis as typeof globalThis & {
+  __iflContentScriptInitialized__?: boolean;
+};
 
-let activePending: PendingSelection | null = null;
-let selectedElement: Element | null = null;
-let selectionVisible = false;
-let inlineTextMode = false;
-let textOriginals = new Map<HTMLElement, string>();
-let originalParent: Element | null = null;
-let originalNextSibling: ChildNode | null = null;
-let originalDisplay = '';
-let refreshFrame = 0;
+if (!globalState.__iflContentScriptInitialized__) {
+  globalState.__iflContentScriptInitialized__ = true;
 
-function isOverlayNode(el: Element | null): boolean {
-  if (!el) return false;
-  const id = el.id;
-  return id === OVERLAY_IDS.hover || id === OVERLAY_IDS.selection || id === OVERLAY_IDS.banner;
-}
+  let refineEnabled = false;
+  let overlay: OverlayHandles | null = null;
+  let currentHover: Element | null = null;
 
-function elementFromEvent(event: PointerEvent): Element | null {
-  const el = document.elementFromPoint(event.clientX, event.clientY);
-  if (isOverlayNode(el)) return null;
-  return el;
-}
+  let activePending: PendingSelection | null = null;
+  let selectedElement: Element | null = null;
+  let selectionVisible = false;
+  let inlineTextMode = false;
+  let textOriginals = new Map<HTMLElement, string>();
+  let originalParent: Element | null = null;
+  let originalNextSibling: ChildNode | null = null;
+  let originalDisplay = '';
+  let refreshFrame = 0;
 
-function onPointerMove(event: PointerEvent) {
+  function isOverlayNode(el: Element | null): boolean {
+    if (!el) return false;
+    const id = el.id;
+    return id === OVERLAY_IDS.hover || id === OVERLAY_IDS.selection || id === OVERLAY_IDS.banner;
+  }
+
+  function elementFromEvent(event: PointerEvent): Element | null {
+    const el = document.elementFromPoint(event.clientX, event.clientY);
+    if (isOverlayNode(el)) return null;
+    return el;
+  }
+
+  function onPointerMove(event: PointerEvent) {
   if (!refineEnabled || !overlay) return;
   const raw = elementFromEvent(event);
   const target = pickMeaningfulTarget(raw);
@@ -51,9 +58,9 @@ function onPointerMove(event: PointerEvent) {
   if (target === currentHover) return;
   currentHover = target;
   overlay.showHover(target.getBoundingClientRect());
-}
+  }
 
-function onClickCapture(event: MouseEvent) {
+  function onClickCapture(event: MouseEvent) {
   if (!refineEnabled) return;
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -61,10 +68,10 @@ function onClickCapture(event: MouseEvent) {
   const raw = document.elementFromPoint(event.clientX, event.clientY) ?? currentHover ?? null;
   const picked = pickMeaningfulTarget(isOverlayNode(raw) ? null : raw);
   if (!picked) return;
-  selectRegion(picked, { revertPreviousPending: true, disableRefineMode: true });
-}
+  selectRegion(picked, { revertPreviousPending: true, disableRefineMode: false });
+  }
 
-function onKeyDown(event: KeyboardEvent) {
+  function onKeyDown(event: KeyboardEvent) {
   if (!refineEnabled) return;
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -74,9 +81,9 @@ function onKeyDown(event: KeyboardEvent) {
       .sendMessage({ type: 'SET_REFINE_MODE', enabled: false } satisfies ExtensionMessage)
       .catch(() => {});
   }
-}
+  }
 
-function setRefineEnabled(enabled: boolean, opts: { keepSelection?: boolean } = {}) {
+  function setRefineEnabled(enabled: boolean, opts: { keepSelection?: boolean } = {}) {
   if (refineEnabled === enabled) return;
   refineEnabled = enabled;
   if (enabled) {
@@ -99,9 +106,9 @@ function setRefineEnabled(enabled: boolean, opts: { keepSelection?: boolean } = 
     }
     currentHover = null;
   }
-}
+  }
 
-function applyDirectEdit(action: DirectEditAction) {
+  function applyDirectEdit(action: DirectEditAction) {
   if (action.type === 'reset_pending_selection') {
     resetSessionState({ revertPreview: action.revert !== false });
     return { ok: true, pending: null };
@@ -138,9 +145,9 @@ function applyDirectEdit(action: DirectEditAction) {
   }
 
   return { ok: false, error: 'Unsupported action.' };
-}
+  }
 
-function startInlineTextEdit(element: Element) {
+  function startInlineTextEdit(element: Element) {
   const editableElements = getEditableTextElements(element);
   if (editableElements.length === 0) {
     return { ok: false, error: 'No editable text nodes found in the selected region.' };
@@ -173,9 +180,9 @@ function startInlineTextEdit(element: Element) {
   window.addEventListener('keydown', onInlineEditorKeyDown, true);
 
   return { ok: true, pending: activePending };
-}
+  }
 
-function stopInlineTextEdit() {
+  function stopInlineTextEdit() {
   if (!inlineTextMode) return;
   inlineTextMode = false;
   window.removeEventListener('focusin', onInlineFocus, true);
@@ -189,24 +196,24 @@ function stopInlineTextEdit() {
   }
 
   overlay?.hideBanner();
-}
+  }
 
-function onInlineFocus(event: FocusEvent) {
+  function onInlineFocus(event: FocusEvent) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
   if (!textOriginals.has(target)) return;
   target.classList.add(OVERLAY_IDS.inlineEditing);
-}
+  }
 
-function onInlineBlur(event: FocusEvent) {
+  function onInlineBlur(event: FocusEvent) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
   if (!textOriginals.has(target)) return;
   target.classList.remove(OVERLAY_IDS.inlineEditing);
   captureTextDiff(target);
-}
+  }
 
-function onInlineEditorKeyDown(event: KeyboardEvent) {
+  function onInlineEditorKeyDown(event: KeyboardEvent) {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
   if (!textOriginals.has(target)) return;
@@ -224,9 +231,9 @@ function onInlineEditorKeyDown(event: KeyboardEvent) {
     }
     target.blur();
   }
-}
+  }
 
-function captureTextDiff(element: HTMLElement) {
+  function captureTextDiff(element: HTMLElement) {
   if (!activePending) return;
   const before = textOriginals.get(element);
   if (before == null) return;
@@ -253,9 +260,9 @@ function captureTextDiff(element: HTMLElement) {
     });
     return next;
   });
-}
+  }
 
-function applyVisibilityChange(element: Element, type: 'hide' | 'remove') {
+  function applyVisibilityChange(element: Element, type: 'hide' | 'remove') {
   const htmlElement = element as HTMLElement;
   const targetLabel = activePending?.target.label ?? 'selected region';
   htmlElement.style.display = 'none';
@@ -283,9 +290,9 @@ function applyVisibilityChange(element: Element, type: 'hide' | 'remove') {
     });
     return next;
   });
-}
+  }
 
-function reorderSelectedElement(element: Element, direction: 'up' | 'down') {
+  function reorderSelectedElement(element: Element, direction: 'up' | 'down') {
   const parent = element.parentElement;
   if (!parent || !activePending) {
     return { ok: false, error: 'The selected block cannot be reordered.' };
@@ -328,14 +335,14 @@ function reorderSelectedElement(element: Element, direction: 'up' | 'down') {
   });
 
   return { ok: true, pending: activePending };
-}
+  }
 
-function updatePendingDiffs(updater: (diffs: EditDiff[]) => EditDiff[]) {
+  function updatePendingDiffs(updater: (diffs: EditDiff[]) => EditDiff[]) {
   if (!activePending) return;
   activePending = { ...activePending, diffs: updater(activePending.diffs) };
-}
+  }
 
-function refreshSelectionOverlay() {
+  function refreshSelectionOverlay() {
   const element = resolveCurrentSelection();
   if (!element || !activePending) return;
   if (!selectionVisible) {
@@ -348,9 +355,9 @@ function refreshSelectionOverlay() {
     return;
   }
   overlay?.showSelection(rect, activePending.target.label);
-}
+  }
 
-function resolveCurrentSelection(): Element | null {
+  function resolveCurrentSelection(): Element | null {
   if (selectedElement && document.contains(selectedElement)) {
     return selectedElement;
   }
@@ -358,9 +365,9 @@ function resolveCurrentSelection(): Element | null {
   const resolved = resolveSelectedElement(activePending.target);
   if (resolved) selectedElement = resolved;
   return resolved;
-}
+  }
 
-function onDocumentClick(event: MouseEvent) {
+  function onDocumentClick(event: MouseEvent) {
   if (refineEnabled || inlineTextMode || !activePending || !selectionVisible) return;
   const target = event.target;
   if (!(target instanceof Node)) return;
@@ -395,9 +402,9 @@ function onDocumentClick(event: MouseEvent) {
 
   selectionVisible = false;
   overlay?.hideSelection();
-}
+  }
 
-function onViewportChange() {
+  function onViewportChange() {
   if (refreshFrame) return;
   refreshFrame = window.requestAnimationFrame(() => {
     refreshFrame = 0;
@@ -406,16 +413,17 @@ function onViewportChange() {
     }
     refreshSelectionOverlay();
   });
-}
+  }
 
-function selectRegion(
+  function selectRegion(
   picked: Element,
   opts: { revertPreviousPending: boolean; disableRefineMode: boolean },
-) {
+  ) {
   resetSessionState({ revertPreview: opts.revertPreviousPending });
 
   const target = buildSelectedTarget(picked);
   const payload: PendingSelection = {
+    tabId: -1,
     pageUrl: location.href,
     pageTitle: document.title,
     target,
@@ -440,9 +448,9 @@ function selectRegion(
   if (opts.disableRefineMode) {
     setRefineEnabled(false, { keepSelection: true });
   }
-}
+  }
 
-function resetSessionState(opts: { revertPreview: boolean }) {
+  function resetSessionState(opts: { revertPreview: boolean }) {
   stopInlineTextEdit();
 
   if (opts.revertPreview) {
@@ -470,20 +478,21 @@ function resetSessionState(opts: { revertPreview: boolean }) {
   originalDisplay = '';
   overlay?.hideSelection();
   overlay?.hideBanner();
+  }
+
+  chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {
+    if (msg.type === 'SET_REFINE_MODE') {
+      setRefineEnabled(msg.enabled);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg.type === 'APPLY_DIRECT_EDIT') {
+      sendResponse(applyDirectEdit(msg.action));
+    }
+  });
+
+  window.addEventListener('click', onDocumentClick, true);
+  window.addEventListener('resize', onViewportChange, true);
+  document.addEventListener('scroll', onViewportChange, true);
 }
-
-chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {
-  if (msg.type === 'SET_REFINE_MODE') {
-    setRefineEnabled(msg.enabled);
-    sendResponse({ ok: true });
-    return;
-  }
-
-  if (msg.type === 'APPLY_DIRECT_EDIT') {
-    sendResponse(applyDirectEdit(msg.action));
-  }
-});
-
-window.addEventListener('click', onDocumentClick, true);
-window.addEventListener('resize', onViewportChange, true);
-document.addEventListener('scroll', onViewportChange, true);

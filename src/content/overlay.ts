@@ -31,7 +31,7 @@ export function createOverlay(): OverlayHandles {
 
   const banner = spawn('div', OVERLAY_IDS.banner);
   banner.style.display = 'none';
-  banner.textContent = 'Refine Mode — hover a region, click to select · ESC to exit';
+  banner.textContent = 'Refine Mode — click regions to select or retarget · ESC to exit';
 
   document.documentElement.append(hover, selection, banner);
 

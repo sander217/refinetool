@@ -22,7 +22,6 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       `- **Page:** ${it.pageTitle || '(untitled)'}`,
       `- **URL:** ${it.pageUrl}`,
       `- **Selector:** \`${it.target.selector}\``,
-      `- **Priority:** ${it.parsed.priority}`,
       `- **Input mode:** ${it.inputMode}`,
       `- **Created:** ${it.createdAt}`,
       ``,
@@ -34,6 +33,10 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       `- Issue: ${it.parsed.currentIssue}`,
       `- Change: ${it.parsed.requestedChange}`,
       `- Intent: ${it.parsed.designIntent}`,
+      `- Implementation direction:`,
+      ...(it.parsed.implementationNotes.length
+        ? it.parsed.implementationNotes.map((note) => `  - ${note}`)
+        : ['  - _(none)_']),
       `- Constraints:`,
       ...(it.parsed.constraints.length
         ? it.parsed.constraints.map((c) => `  - ${c}`)

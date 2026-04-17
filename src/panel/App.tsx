@@ -166,6 +166,7 @@ export default function App() {
         const parsed = await refinementParser.parse({
           rawInput: opts.rawInput,
           target: effectiveTarget,
+          diffs: pending.diffs,
         });
 
         const item: RefinementItem = {
@@ -234,6 +235,7 @@ export default function App() {
       const parsed = await refinementParser.parse({
         rawInput: item.rawInput,
         target: item.target,
+        diffs: item.diffs,
       });
 
       const nextItem: RefinementItem = {
@@ -291,6 +293,7 @@ export default function App() {
               onChange={setDraftInput}
               inputMode={draftInputMode}
               onInputModeChange={setDraftInputMode}
+              hasCapturedDiffs={pending.diffs.length > 0}
               isSaving={isSaving}
               onSave={handleSave}
             />
