@@ -13,6 +13,13 @@ const MEANINGFUL_TAGS = new Set([
   'iframe',
   'table',
   'dialog',
+  'figure',
+  'picture',
+  'fieldset',
+  'ul',
+  'ol',
+  'dl',
+  'menu',
 ]);
 
 const LEAF_TAGS = new Set([
@@ -29,9 +36,20 @@ const LEAF_TAGS = new Set([
 ]);
 
 const MEANINGFUL_CLASS_REGEX =
-  /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item)\b/i;
+  /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item|actions|media|testimonial|footer|header|field-group|btn-group|controls|figure)\b/i;
 
 const MAX_WALK = 8;
+
+// Minimum size for size-only (unnamed) container candidates. Raised to filter
+// out the "layout divs" that make hover jitter between overlapping wrappers.
+const SIZE_FALLBACK_MIN_WIDTH = 260;
+const SIZE_FALLBACK_MIN_HEIGHT = 140;
+
+// Below this size a node can't anchor a block-level selection regardless of
+// its tag/class — prevents tiny inline decoration from being a cycle target.
+const BLOCK_MIN_WIDTH = 80;
+const BLOCK_MIN_HEIGHT = 32;
+
 const EDITABLE_TEXT_TAGS = new Set([
   'h1',
   'h2',
@@ -77,8 +95,8 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
 
     const rect = current.getBoundingClientRect();
     if (
-      rect.width >= 220 &&
-      rect.height >= 100 &&
+      rect.width >= SIZE_FALLBACK_MIN_WIDTH &&
+      rect.height >= SIZE_FALLBACK_MIN_HEIGHT &&
       hasVisibleChildren(current) &&
       isSelectableCandidate(current)
     ) {
@@ -87,6 +105,98 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
     current = current.parentElement;
   }
   return isSelectableCandidate(start) ? start : null;
+}
+
+// Stickiness: if the pointer is still inside the previously-hovered target,
+// keep it. Prevents swapping to a sibling container when the cursor moves
+// between nested children within the same block.
+export function pickStableTarget(
+  raw: Element | null,
+  currentStable: Element | null,
+): Element | null {
+  if (!raw) return null;
+  if (
+    currentStable &&
+    document.contains(currentStable) &&
+    currentStable.contains(raw) &&
+    isSelectableCandidate(currentStable)
+  ) {
+    return currentStable;
+  }
+  return pickMeaningfulTarget(raw);
+}
+
+function isBlockCandidate(el: Element): boolean {
+  if (!isSelectableCandidate(el)) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < BLOCK_MIN_WIDTH || rect.height < BLOCK_MIN_HEIGHT) return false;
+
+  const tag = el.tagName.toLowerCase();
+  if (LEAF_TAGS.has(tag)) return true;
+  if (MEANINGFUL_TAGS.has(tag)) return true;
+  if (el.getAttribute('role')) return true;
+  if (el.getAttribute('aria-label')) return true;
+  if (el.getAttribute('data-testid')) return true;
+  const cls = readClassName(el);
+  if (cls && MEANINGFUL_CLASS_REGEX.test(cls)) return true;
+  if (
+    rect.width >= SIZE_FALLBACK_MIN_WIDTH &&
+    rect.height >= SIZE_FALLBACK_MIN_HEIGHT &&
+    hasVisibleChildren(el)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function walkToParentBlock(el: Element): Element | null {
+  let node: Element | null = el.parentElement;
+  while (
+    node &&
+    node !== document.body &&
+    node !== document.documentElement
+  ) {
+    if (isBlockCandidate(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+export function walkToSiblingBlock(
+  el: Element,
+  direction: 'prev' | 'next',
+): Element | null {
+  // First pass: walk siblings at the same level. If none qualify as a block,
+  // climb to the parent and scan its siblings — this keeps navigation useful
+  // inside wrappers that split the layout into non-block children.
+  const step = (n: Element): Element | null =>
+    direction === 'next' ? n.nextElementSibling : n.previousElementSibling;
+
+  let node: Element | null = el;
+  while (node && node !== document.body && node !== document.documentElement) {
+    let sibling = step(node);
+    while (sibling) {
+      if (isBlockCandidate(sibling)) return sibling;
+      sibling = step(sibling);
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+export function walkToChildBlock(el: Element): Element | null {
+  let best: Element | null = null;
+  let bestArea = 0;
+  for (const child of Array.from(el.children)) {
+    if (!isBlockCandidate(child)) continue;
+    const rect = child.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area > bestArea) {
+      best = child;
+      bestArea = area;
+    }
+  }
+  return best;
 }
 
 function readClassName(el: Element): string | null {
@@ -209,8 +319,14 @@ export function labelTarget(el: Element): string {
   if (tag === 'aside') return 'Sidebar';
   if (tag === 'main') return 'Main content';
   if (tag === 'form') return 'Form block';
-  if (tag === 'ul' || tag === 'ol') return 'List block';
+  if (tag === 'fieldset') return 'Form fieldset';
+  if (tag === 'ul' || tag === 'ol' || tag === 'menu') return 'List block';
+  if (tag === 'dl') return 'Description list';
   if (tag === 'table') return 'Table block';
+  if (tag === 'figure' || tag === 'picture') {
+    const caption = el.querySelector('figcaption')?.textContent?.trim().slice(0, 40);
+    return caption ? `Figure: ${caption}` : 'Figure';
+  }
   if (tag === 'section' || tag === 'article') {
     const heading = el.querySelector('h1, h2, h3');
     const text = heading?.textContent?.trim().slice(0, 40);
@@ -286,7 +402,57 @@ export function buildSelectedTarget(el: Element): SelectedTarget {
     boundingBox: getBoundingBox(el),
     snippet: truncate(outer.replace(/\s+/g, ' '), 400),
     tag: el.tagName.toLowerCase(),
+    hasImage: findImageTarget(el) !== null,
+    breadcrumb: buildBreadcrumb(el),
   };
+}
+
+function buildBreadcrumb(el: Element): string[] {
+  const chain: Element[] = [];
+  let node: Element | null = el;
+  while (
+    node &&
+    node !== document.body &&
+    node !== document.documentElement
+  ) {
+    chain.unshift(node);
+    node = node.parentElement;
+  }
+
+  const path = chain
+    .filter((n, idx) => idx === chain.length - 1 || isBreadcrumbCandidate(n))
+    .slice(-5)
+    .map((n, idx, arr) => (idx === arr.length - 1 ? labelTarget(n) : shortLabel(n)));
+  return ['Page', ...path];
+}
+
+function isBreadcrumbCandidate(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (MEANINGFUL_TAGS.has(tag)) return true;
+  if (el.getAttribute('role')) return true;
+  const cls = readClassName(el);
+  if (cls && MEANINGFUL_CLASS_REGEX.test(cls)) return true;
+  return false;
+}
+
+function shortLabel(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'section' || tag === 'article') {
+    const heading = el.querySelector('h1, h2, h3');
+    const text = heading?.textContent?.trim().slice(0, 24);
+    return text ? text : titleCase(tag);
+  }
+  if (tag === 'header') return 'Header';
+  if (tag === 'footer') return 'Footer';
+  if (tag === 'nav') return 'Nav';
+  if (tag === 'aside') return 'Sidebar';
+  if (tag === 'main') return 'Main';
+  if (tag === 'form') return 'Form';
+  if (tag === 'figure' || tag === 'picture') return 'Figure';
+  if (tag === 'ul' || tag === 'ol' || tag === 'menu') return 'List';
+  const meaningful = matchMeaningfulClass(el);
+  if (meaningful) return titleCase(meaningful);
+  return tag;
 }
 
 export function resolveSelectedElement(target: SelectedTarget): Element | null {
@@ -295,6 +461,40 @@ export function resolveSelectedElement(target: SelectedTarget): Element | null {
   } catch {
     return null;
   }
+}
+
+export function findImageTarget(root: Element): HTMLImageElement | null {
+  if (root.tagName.toLowerCase() === 'img') return root as HTMLImageElement;
+  const direct = root.querySelector('img');
+  if (direct instanceof HTMLImageElement) return direct;
+  return null;
+}
+
+// When the user clicks directly on a text node (button label, heading, p,
+// etc.) we want to skip "lock the containing region and wait" and go straight
+// into edit mode on that exact text. This finds the nearest text leaf under
+// the click, or null if the click didn't land on one.
+export function findEditableTextLeafAt(raw: Element): HTMLElement | null {
+  let node: Element | null = raw;
+  while (node && node !== document.body && node !== document.documentElement) {
+    if (node instanceof HTMLElement && isLikelyEditableTextLeaf(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function isLikelyEditableTextLeaf(el: HTMLElement): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (!EDITABLE_TEXT_TAGS.has(tag)) return false;
+  if (el.isContentEditable) return false;
+  const text = (el.innerText ?? el.textContent ?? '').trim();
+  if (!text) return false;
+  // Inline wrappers (span/strong/em/small) qualify only when they hold plain
+  // text — otherwise we'd accidentally grab a wrapper over nested markup.
+  if (tag === 'span' || tag === 'strong' || tag === 'em' || tag === 'small') {
+    return el.children.length === 0;
+  }
+  return true;
 }
 
 export function getEditableTextElements(root: Element): HTMLElement[] {

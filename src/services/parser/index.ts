@@ -19,6 +19,9 @@ const INTENT_REGEX =
   /\b(intent|goal|feel|vibe|premium|minimal|playful|serious|trustworthy|modern|bold|quiet|calm|confident|friendly|luxury|refined)\b/i;
 const CONSTRAINT_CUES =
   /\b(don'?t|do not|avoid|keep|preserve|maintain|must not|mustn'?t|without|only|exclude)\b/i;
+const PRESERVE_CUES = /\b(keep|preserve|maintain|retain)\b/i;
+const DO_NOT_TOUCH_CUES =
+  /\b(don'?t|do not|must not|mustn'?t|avoid|leave alone|exclude|without touching|except)\b/i;
 
 class MockParser implements RefinementParser {
   readonly id = 'mock-rules';
@@ -28,30 +31,39 @@ class MockParser implements RefinementParser {
     if (!text && diffs.length > 0) {
       const requestedChange = summarizeDiffsAsRequestedChange(diffs);
       const currentIssue = summarizeDiffsAsIssue(diffs, target.label);
-      return {
-        target: target.label,
-        currentIssue,
-        requestedChange,
-        designIntent: 'Make the shipped implementation match the direct edits already applied in the local preview.',
-        constraints: defaultConstraints(),
-        implementationNotes: inferImplementationNotes({
-          rawInput: requestedChange,
-          target,
+      return withDefaultGuardrails(
+        {
+          target: target.label,
           currentIssue,
           requestedChange,
-        }),
-      };
+          designIntent:
+            'Make the shipped implementation match the direct edits already applied in the local preview.',
+          constraints: [],
+          implementationNotes: inferImplementationNotes({
+            rawInput: requestedChange,
+            target,
+            currentIssue,
+            requestedChange,
+          }),
+        },
+        target,
+        [],
+      );
     }
 
     if (!text) {
-      return {
-        target: target.label,
-        currentIssue: '(no user input provided)',
-        requestedChange: '(describe the change)',
-        designIntent: '(describe the intent)',
-        constraints: defaultConstraints(),
-        implementationNotes: defaultImplementationNotes(target.label),
-      };
+      return withDefaultGuardrails(
+        {
+          target: target.label,
+          currentIssue: '',
+          requestedChange: '',
+          designIntent: '',
+          constraints: [],
+          implementationNotes: defaultImplementationNotes(target.label),
+        },
+        target,
+        [],
+      );
     }
 
     const sentences = splitSentences(text);
@@ -60,20 +72,82 @@ class MockParser implements RefinementParser {
     const requestedChange = findFirst(sentences, CHANGE_REGEX) ?? defaultChangeFromInput(text);
     const designIntent = findFirst(sentences, INTENT_REGEX) ?? defaultIntent(target.label);
 
-    return {
-      target: target.label,
-      currentIssue,
-      requestedChange,
-      designIntent,
-      constraints: constraints.length ? constraints : defaultConstraints(),
-      implementationNotes: inferImplementationNotes({
-        rawInput: text,
-        target,
+    return withDefaultGuardrails(
+      {
+        target: target.label,
         currentIssue,
         requestedChange,
-      }),
-    };
+        designIntent,
+        constraints,
+        implementationNotes: inferImplementationNotes({
+          rawInput: text,
+          target,
+          currentIssue,
+          requestedChange,
+        }),
+      },
+      target,
+      sentences,
+    );
   }
+}
+
+function withDefaultGuardrails(
+  parsed: ParsedRefinement,
+  target: SelectedTarget,
+  sentences: string[],
+): ParsedRefinement {
+  const { preserve, doNotTouch, leftoverConstraints } = partitionGuardrails(
+    parsed.constraints,
+    sentences,
+    target,
+  );
+  return {
+    ...parsed,
+    constraints: leftoverConstraints,
+    preserve,
+    doNotTouch,
+  };
+}
+
+function partitionGuardrails(
+  constraints: string[],
+  sentences: string[],
+  target: SelectedTarget,
+): { preserve: string[]; doNotTouch: string[]; leftoverConstraints: string[] } {
+  const preserve = new Set<string>();
+  const doNotTouch = new Set<string>();
+  const leftover: string[] = [];
+
+  for (const entry of constraints) {
+    if (PRESERVE_CUES.test(entry)) preserve.add(entry);
+    else if (DO_NOT_TOUCH_CUES.test(entry)) doNotTouch.add(entry);
+    else leftover.push(entry);
+  }
+
+  // Scan remaining sentences for preserve/do-not-touch cues that weren't
+  // already captured by detectConstraints (which returns raw sentences).
+  for (const sentence of sentences) {
+    if (PRESERVE_CUES.test(sentence) && !constraints.includes(sentence)) {
+      preserve.add(cleanSentence(sentence));
+    }
+    if (DO_NOT_TOUCH_CUES.test(sentence) && !constraints.includes(sentence)) {
+      doNotTouch.add(cleanSentence(sentence));
+    }
+  }
+
+  if (preserve.size === 0) {
+    preserve.add(`Keep the ${target.label}'s existing behavior and accessibility.`);
+  }
+  if (doNotTouch.size === 0) {
+    doNotTouch.add('Do not modify sections of the page outside the selected region.');
+  }
+
+  return {
+    preserve: Array.from(preserve).slice(0, 5),
+    doNotTouch: Array.from(doNotTouch).slice(0, 5),
+    leftoverConstraints: leftover.slice(0, 5),
+  };
 }
 
 function splitSentences(text: string): string[] {
@@ -113,10 +187,6 @@ function defaultChangeFromInput(text: string): string {
 
 function defaultIntent(label: string): string {
   return `Improve the ${label} so it better serves the user's stated goal.`;
-}
-
-function defaultConstraints(): string[] {
-  return ['Keep the current layout structure', 'Do not modify surrounding sections'];
 }
 
 function defaultImplementationNotes(label: string): string[] {

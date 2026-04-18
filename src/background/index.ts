@@ -1,5 +1,4 @@
 import type { ExtensionMessage, RefineModeResponse } from '../shared/messages';
-import { DIRECT_EDIT_MESSAGE_TYPES } from '../shared/messages';
 import { STORAGE_KEYS } from '../shared/types';
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -85,29 +84,6 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
     void getActiveTabId().then((tabId) => {
       const enabled = typeof tabId === 'number' ? refineModeByTab.get(tabId) ?? false : false;
       sendResponse({ enabled } satisfies RefineModeResponse);
-    });
-    return true;
-  }
-
-  if (DIRECT_EDIT_MESSAGE_TYPES.has(msg.type)) {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, async ([tab]) => {
-      if (tab?.id == null) {
-        sendResponse({ ok: false, error: 'No active tab' });
-        return;
-      }
-      try {
-        await ensureContentScript(tab.id);
-        const response = await chrome.tabs.sendMessage(tab.id, msg);
-        sendResponse(response);
-      } catch (err) {
-        sendResponse({
-          ok: false,
-          error:
-            err instanceof Error
-              ? err.message
-              : 'Content script unavailable on this page.',
-        });
-      }
     });
     return true;
   }

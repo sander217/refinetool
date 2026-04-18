@@ -15,6 +15,7 @@ import {
 } from '../storage';
 import { refinementParser } from '../services/parser';
 import { generatePromptsForItem } from '../services/promptTemplates';
+import { appendChangelog } from '../services/artifact';
 import { nowIso, uid } from '../shared/utils';
 
 import { ActiveTargetCard } from './components/ActiveTargetCard';
@@ -81,6 +82,9 @@ export default function App() {
     const listener = (msg: ExtensionMessage) => {
       if (msg.type === 'REFINE_MODE_CHANGED') {
         setRefineEnabled(msg.enabled);
+      }
+      if (msg.type === 'INLINE_TEXT_STATE_CHANGED') {
+        setInlineTextEditing(msg.active);
       }
     };
     chrome.runtime.onMessage.addListener(listener);
@@ -169,6 +173,7 @@ export default function App() {
           diffs: pending.diffs,
         });
 
+        const createdAt = nowIso();
         const item: RefinementItem = {
           id: uid(),
           pageUrl: pending.pageUrl,
@@ -180,7 +185,14 @@ export default function App() {
           parsed,
           diffs: pending.diffs,
           prompts: { claude: '', codex: '', generic: '' },
-          createdAt: nowIso(),
+          createdAt,
+          changelog: [
+            {
+              at: createdAt,
+              kind: 'created',
+              note: `Captured ${pending.diffs.length} direct edit${pending.diffs.length === 1 ? '' : 's'}.`,
+            },
+          ],
         };
         item.prompts = generatePromptsForItem(item);
 
@@ -210,6 +222,11 @@ export default function App() {
         prompts: current.prompts,
       };
       nextItem.prompts = generatePromptsForItem(nextItem);
+      nextItem.changelog = appendChangelog(current.changelog, {
+        at: nowIso(),
+        kind: 'edited',
+        note: describePatch(patch),
+      });
 
       const next = await updateItem(id, nextItem);
       setItemsState(next);
@@ -221,7 +238,12 @@ export default function App() {
     async (id: string) => {
       const item = items.find((entry) => entry.id === id);
       if (!item) return;
-      const next = await updateItem(id, { prompts: generatePromptsForItem(item) });
+      const prompts = generatePromptsForItem(item);
+      const changelog = appendChangelog(item.changelog, {
+        at: nowIso(),
+        kind: 'regenerated',
+      });
+      const next = await updateItem(id, { prompts, changelog });
       setItemsState(next);
     },
     [items],
@@ -244,6 +266,10 @@ export default function App() {
         prompts: item.prompts,
       };
       nextItem.prompts = generatePromptsForItem(nextItem);
+      nextItem.changelog = appendChangelog(item.changelog, {
+        at: nowIso(),
+        kind: 'reparsed',
+      });
 
       const next = await updateItem(id, nextItem);
       setItemsState(next);
@@ -286,6 +312,30 @@ export default function App() {
               onRemoveSelected={() => void runDirectEditAction({ type: 'remove_selected' })}
               onReorderSelected={(direction) =>
                 void runDirectEditAction({ type: 'reorder_selected', direction })
+              }
+              onAttachImageReference={(payload) =>
+                void runDirectEditAction({ type: 'attach_image_reference', ...payload })
+              }
+              onMarkImageRegenerate={(prompt) =>
+                void runDirectEditAction({ type: 'mark_image_regenerate', prompt })
+              }
+              onClearImageIntent={() =>
+                void runDirectEditAction({ type: 'clear_image_intent' })
+              }
+              onNudgePosition={(direction) =>
+                void runDirectEditAction({ type: 'nudge_position', direction })
+              }
+              onAdjustFontSize={(direction) =>
+                void runDirectEditAction({ type: 'adjust_font_size', direction })
+              }
+              onAdjustBorderRadius={(direction) =>
+                void runDirectEditAction({ type: 'adjust_border_radius', direction })
+              }
+              onAdjustSize={(axis, direction) =>
+                void runDirectEditAction({ type: 'adjust_size', axis, direction })
+              }
+              onResetStyleAdjustments={() =>
+                void runDirectEditAction({ type: 'reset_style_adjustments' })
               }
             />
             <NoteEditor
@@ -352,6 +402,12 @@ function EmptyState({
       ) : null}
     </section>
   );
+}
+
+function describePatch(patch: Partial<RefinementItem>): string {
+  const changed = Object.keys(patch).filter((key) => key !== 'prompts' && key !== 'changelog');
+  if (changed.length === 0) return 'Regenerated prompts.';
+  return `Updated ${changed.join(', ')}.`;
 }
 
 async function queryRefineMode(): Promise<boolean> {
