@@ -978,6 +978,11 @@ if (!globalState.__iflContentScriptInitialized__) {
   window.addEventListener('focusin', onInlineFocus, true);
   window.addEventListener('focusout', onInlineBlur, true);
   window.addEventListener('keydown', onInlineEditorKeyDown, true);
+  // While editing we must silence the page's own click handling inside the
+  // region — otherwise pressing Space on a contenteditable <button> fires the
+  // button's onClick (native activation), clicking a <a href> navigates, etc.
+  // Space/Enter are re-routed to text insertion / blur in onInlineEditorKeyDown.
+  window.addEventListener('click', onInlineClickBlock, true);
 
   return { ok: true, pending: activePending };
   }
@@ -989,6 +994,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   window.removeEventListener('focusin', onInlineFocus, true);
   window.removeEventListener('focusout', onInlineBlur, true);
   window.removeEventListener('keydown', onInlineEditorKeyDown, true);
+  window.removeEventListener('click', onInlineClickBlock, true);
 
   for (const node of textOriginals.keys()) {
     node.removeAttribute('contenteditable');
@@ -1023,17 +1029,67 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
+    event.stopImmediatePropagation();
     target.blur();
+    return;
   }
 
   if (event.key === 'Escape') {
     event.preventDefault();
+    event.stopImmediatePropagation();
     const original = textOriginals.get(target);
     if (original != null) {
       target.innerText = original;
     }
     target.blur();
+    return;
   }
+
+  // Space on a focused <button> natively activates it (click handler fires).
+  // While editing we want Space to type a literal space into the
+  // contenteditable, so intercept + manually insert.
+  if (event.key === ' ' && isButtonLikeEditable(target)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    insertTextAtCaret(' ');
+    return;
+  }
+  }
+
+  function isButtonLikeEditable(el: HTMLElement): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'button') return true;
+    if (tag === 'a' && el.hasAttribute('href')) return true;
+    const role = el.getAttribute('role');
+    return role === 'button' || role === 'link';
+  }
+
+  function insertTextAtCaret(text: string): void {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.setEndAfter(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Suppress every click that lands inside the region while editing — this
+  // blocks <a href> navigation, <button> onClick, and the synthetic click
+  // that Space/Enter fire on focused buttons. Caret positioning is driven by
+  // mousedown/focus events, which we leave untouched.
+  function onInlineClickBlock(event: MouseEvent) {
+    if (!inlineTextMode) return;
+    const selected = resolveCurrentSelection();
+    if (!selected) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (!selected.contains(target)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }
 
   function captureTextDiff(element: HTMLElement) {
