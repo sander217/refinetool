@@ -113,11 +113,27 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onClickCapture(event: MouseEvent) {
   if (!refineEnabled) return;
+
+  // While editing, a plain click outside the locked region exits edit mode
+  // and lets the click proceed naturally (so the user can interact with
+  // whatever they just clicked on). Clicks inside the region are left alone
+  // so the user can retarget the caret between text leaves.
+  if (inlineTextMode && !isPickingModifier(event)) {
+    const target = event.target;
+    const selected = resolveCurrentSelection();
+    if (selected && target instanceof Node && !selected.contains(target) && !isOverlayNode(target instanceof Element ? target : null)) {
+      stopInlineTextEdit();
+      refreshSelectionOverlay();
+      overlay?.showBanner(SELECTION_BANNER);
+    }
+    return;
+  }
+
   // Only hijack clicks when the user explicitly opts in with ⌘/Ctrl. All
   // other clicks pass through so the user can click buttons, drag text, etc.
   if (!isPickingModifier(event)) return;
-  // While editing, freeze selection changes — user must ESC / Stop first.
-  // Prevents accidentally wiping an edit by ⌘-clicking elsewhere.
+  // While editing, freeze selection changes — user must click outside or
+  // use the panel's Stop button to exit first.
   if (inlineTextMode) return;
 
   event.preventDefault();
@@ -190,14 +206,6 @@ if (!globalState.__iflContentScriptInitialized__) {
   if (event.key === 'Escape') {
     event.preventDefault();
     event.stopImmediatePropagation();
-    // Two-stage exit: first Esc leaves edit mode but keeps the region
-    // locked; second Esc leaves refine mode entirely.
-    if (inlineTextMode) {
-      stopInlineTextEdit();
-      refreshSelectionOverlay();
-      overlay?.showBanner(SELECTION_BANNER);
-      return;
-    }
     setRefineEnabled(false);
     chrome.runtime
       .sendMessage({ type: 'SET_REFINE_MODE', enabled: false } satisfies ExtensionMessage)
@@ -579,7 +587,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   selectionVisible = true;
   refreshSelectionOverlay();
   overlay?.showBanner(
-    'Editing text — type · click other text in this region to jump · ESC to exit edit mode',
+    'Editing text — type · click other text to jump · click outside the region to finish',
   );
 
   const nextOriginals = new Map(textOriginals);
