@@ -14,6 +14,10 @@ export type SelectedTarget = {
   // True when the selected element is an <img> or contains an <img>. Drives
   // the image-intent controls in the panel.
   hasImage: boolean;
+  // Human-readable DOM path of meaningful ancestors from root → target, for
+  // orientation in the panel. Last entry is the current target. Optional so
+  // previously-stored selections from before this field existed still load.
+  breadcrumb?: string[];
 };
 
 export type InputMode = 'text' | 'voice';

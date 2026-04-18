@@ -14,6 +14,7 @@ import {
   resolveSelectedElement,
   walkToChildBlock,
   walkToParentBlock,
+  walkToSiblingBlock,
 } from './dom';
 import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
 
@@ -51,9 +52,9 @@ if (!globalState.__iflContentScriptInitialized__) {
   let refreshFrame = 0;
 
   const REFINE_BANNER =
-    'Refine — click a region · [ / ] cycle parent·child · R reselect · ESC exit';
+    'Refine — click a region · [ ] parent·child · , . prev·next · R reselect · ESC exit';
   const SELECTION_BANNER =
-    'Selected — [ / ] parent·child · R reselect · Option+↑↓ also cycle · ESC exit';
+    'Locked — [ ] parent·child · , . prev·next sibling · Opt+↑↓←→ · R reselect · ESC exit';
 
   function isOverlayNode(el: Element | null): boolean {
     if (!el) return false;
@@ -69,8 +70,9 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onPointerMove(event: PointerEvent) {
   if (!refineEnabled || !overlay) return;
-  if (selectionLocked) {
-    // Keep the selection box stable; drop any leftover hover outline.
+  if (inlineTextMode || selectionLocked) {
+    // Inline editing or locked selection: freeze the overlay — don't paint
+    // fresh hover outlines over the thing the user is about to click.
     if (currentHover) {
       overlay.hideHover();
       currentHover = null;
@@ -91,6 +93,17 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onClickCapture(event: MouseEvent) {
   if (!refineEnabled) return;
+
+  // While inline text is active, let clicks on editable text focus the
+  // contenteditable node natively. Intercepting here was swallowing the
+  // focus click, which made "Inline text edit" do nothing.
+  if (inlineTextMode) {
+    const raw = event.target instanceof Element ? event.target : null;
+    if (raw && (raw.closest(`.${OVERLAY_IDS.inlineEditable}`) || (raw as HTMLElement).isContentEditable)) {
+      return;
+    }
+  }
+
   event.preventDefault();
   event.stopImmediatePropagation();
 
@@ -120,6 +133,10 @@ if (!globalState.__iflContentScriptInitialized__) {
     event.key === '[' || (event.altKey && event.key === 'ArrowUp');
   const wantsChild =
     event.key === ']' || (event.altKey && event.key === 'ArrowDown');
+  const wantsPrev =
+    event.key === ',' || (event.altKey && event.key === 'ArrowLeft');
+  const wantsNext =
+    event.key === '.' || (event.altKey && event.key === 'ArrowRight');
   const wantsUnlock = event.key === 'r' || event.key === 'R';
 
   if (!activePending || !selectionVisible) return;
@@ -134,6 +151,18 @@ if (!globalState.__iflContentScriptInitialized__) {
     event.preventDefault();
     event.stopImmediatePropagation();
     cycleSelection('child');
+    return;
+  }
+  if (wantsPrev) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cycleSelection('prev');
+    return;
+  }
+  if (wantsNext) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cycleSelection('next');
     return;
   }
   if (wantsUnlock) {
@@ -170,18 +199,26 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
   }
 
-  function cycleSelection(direction: 'parent' | 'child') {
+  function cycleSelection(direction: 'parent' | 'child' | 'prev' | 'next') {
   if (!activePending) return;
   const current = resolveCurrentSelection();
   if (!current) return;
 
   const next =
-    direction === 'parent' ? walkToParentBlock(current) : walkToChildBlock(current);
+    direction === 'parent'
+      ? walkToParentBlock(current)
+      : direction === 'child'
+        ? walkToChildBlock(current)
+        : walkToSiblingBlock(current, direction === 'next' ? 'next' : 'prev');
   if (!next || next === current) {
     overlay?.showBanner(
       direction === 'parent'
         ? 'No wider block available — already at the outermost meaningful region.'
-        : 'No nested block inside this region to cycle into.',
+        : direction === 'child'
+          ? 'No nested block inside this region to cycle into.'
+          : direction === 'prev'
+            ? 'No previous sibling block available.'
+            : 'No next sibling block available.',
     );
     return;
   }
@@ -197,7 +234,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   activePending = { ...activePending, target };
   selectionVisible = true;
   selectionLocked = true;
-  overlay?.showSelection(next.getBoundingClientRect(), target.label);
+  overlay?.showSelection(next.getBoundingClientRect(), target.label, currentSelectionState());
   overlay?.hideHover();
   overlay?.showBanner(SELECTION_BANNER);
   currentHover = null;
@@ -470,6 +507,7 @@ if (!globalState.__iflContentScriptInitialized__) {
     node.removeAttribute('spellcheck');
     node.classList.remove(OVERLAY_IDS.inlineEditable, OVERLAY_IDS.inlineEditing);
   }
+  refreshSelectionOverlay();
 
   overlay?.hideBanner();
   }
@@ -616,6 +654,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   function updatePendingDiffs(updater: (diffs: EditDiff[]) => EditDiff[]) {
   if (!activePending) return;
   activePending = { ...activePending, diffs: updater(activePending.diffs) };
+  refreshSelectionOverlay();
   }
 
   function refreshSelectionOverlay() {
@@ -630,7 +669,13 @@ if (!globalState.__iflContentScriptInitialized__) {
     overlay?.hideSelection();
     return;
   }
-  overlay?.showSelection(rect, activePending.target.label);
+  overlay?.showSelection(rect, activePending.target.label, currentSelectionState());
+  }
+
+  function currentSelectionState() {
+  if (inlineTextMode) return 'editing' as const;
+  if (activePending && activePending.diffs.length > 0) return 'edited' as const;
+  return 'locked' as const;
   }
 
   function resolveCurrentSelection(): Element | null {
@@ -715,7 +760,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   originalNextSibling = picked.nextSibling;
   originalDisplay = (picked as HTMLElement).style.display;
 
-  overlay?.showSelection(picked.getBoundingClientRect(), target.label);
+  overlay?.showSelection(picked.getBoundingClientRect(), target.label, currentSelectionState());
   overlay?.hideHover();
   overlay?.showBanner(SELECTION_BANNER);
   currentHover = null;

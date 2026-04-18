@@ -69,13 +69,24 @@ export function ActiveTargetCard({
         </div>
         <button className="ifl-button-ghost" onClick={onDiscard}>Discard</button>
       </div>
+      <nav className="ifl-breadcrumb" aria-label="Selection path">
+        {(target.breadcrumb ?? []).map((crumb, idx, arr) => (
+          <span key={`${idx}-${crumb}`} className="ifl-crumb">
+            <span className={idx === arr.length - 1 ? 'ifl-crumb-current' : ''}>{crumb}</span>
+            {idx < arr.length - 1 ? <span className="ifl-crumb-sep">›</span> : null}
+          </span>
+        ))}
+      </nav>
       <dl className="ifl-meta">
         <dt>Page</dt>
         <dd title={pageUrl}>{pageTitle || pageUrl}</dd>
+        <dt>Type</dt>
+        <dd>
+          <code>&lt;{target.tag}&gt;</code>
+          {target.hasImage ? <span className="ifl-tag"> image block</span> : null}
+        </dd>
         <dt>Selector</dt>
         <dd><code>{target.selector}</code></dd>
-        <dt>Tag</dt>
-        <dd><code>&lt;{target.tag}&gt;</code></dd>
         <dt>Bounds</dt>
         <dd>
           {target.boundingBox.width}×{target.boundingBox.height}px @ (
@@ -222,8 +233,6 @@ function ImageIntentPanel({
         fileSize: upload.fileSize,
         mimeType: upload.mimeType,
       });
-      setUpload(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
     onAttachImageReference({

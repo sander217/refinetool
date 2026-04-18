@@ -157,6 +157,30 @@ code {
 .ifl-meta dt { color: var(--text-subtle); }
 .ifl-meta dd { margin: 0; word-break: break-word; }
 
+.ifl-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  font-size: 11px;
+  color: var(--text-subtle);
+  margin: 4px 0 2px;
+}
+.ifl-crumb { display: inline-flex; align-items: center; gap: 4px; }
+.ifl-crumb-current {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.ifl-crumb-sep { opacity: 0.55; }
+.ifl-tag {
+  font-size: 11px;
+  color: var(--text-subtle);
+  padding-left: 4px;
+}
+
 .ifl-button,
 .ifl-button-ghost,
 .ifl-button-danger {

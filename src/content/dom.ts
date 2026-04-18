@@ -13,6 +13,13 @@ const MEANINGFUL_TAGS = new Set([
   'iframe',
   'table',
   'dialog',
+  'figure',
+  'picture',
+  'fieldset',
+  'ul',
+  'ol',
+  'dl',
+  'menu',
 ]);
 
 const LEAF_TAGS = new Set([
@@ -29,7 +36,7 @@ const LEAF_TAGS = new Set([
 ]);
 
 const MEANINGFUL_CLASS_REGEX =
-  /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item)\b/i;
+  /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item|actions|media|testimonial|footer|header|field-group|btn-group|controls|figure)\b/i;
 
 const MAX_WALK = 8;
 
@@ -150,6 +157,28 @@ export function walkToParentBlock(el: Element): Element | null {
     node !== document.documentElement
   ) {
     if (isBlockCandidate(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+export function walkToSiblingBlock(
+  el: Element,
+  direction: 'prev' | 'next',
+): Element | null {
+  // First pass: walk siblings at the same level. If none qualify as a block,
+  // climb to the parent and scan its siblings — this keeps navigation useful
+  // inside wrappers that split the layout into non-block children.
+  const step = (n: Element): Element | null =>
+    direction === 'next' ? n.nextElementSibling : n.previousElementSibling;
+
+  let node: Element | null = el;
+  while (node && node !== document.body && node !== document.documentElement) {
+    let sibling = step(node);
+    while (sibling) {
+      if (isBlockCandidate(sibling)) return sibling;
+      sibling = step(sibling);
+    }
     node = node.parentElement;
   }
   return null;
@@ -290,8 +319,14 @@ export function labelTarget(el: Element): string {
   if (tag === 'aside') return 'Sidebar';
   if (tag === 'main') return 'Main content';
   if (tag === 'form') return 'Form block';
-  if (tag === 'ul' || tag === 'ol') return 'List block';
+  if (tag === 'fieldset') return 'Form fieldset';
+  if (tag === 'ul' || tag === 'ol' || tag === 'menu') return 'List block';
+  if (tag === 'dl') return 'Description list';
   if (tag === 'table') return 'Table block';
+  if (tag === 'figure' || tag === 'picture') {
+    const caption = el.querySelector('figcaption')?.textContent?.trim().slice(0, 40);
+    return caption ? `Figure: ${caption}` : 'Figure';
+  }
   if (tag === 'section' || tag === 'article') {
     const heading = el.querySelector('h1, h2, h3');
     const text = heading?.textContent?.trim().slice(0, 40);
@@ -368,7 +403,56 @@ export function buildSelectedTarget(el: Element): SelectedTarget {
     snippet: truncate(outer.replace(/\s+/g, ' '), 400),
     tag: el.tagName.toLowerCase(),
     hasImage: findImageTarget(el) !== null,
+    breadcrumb: buildBreadcrumb(el),
   };
+}
+
+function buildBreadcrumb(el: Element): string[] {
+  const chain: Element[] = [];
+  let node: Element | null = el;
+  while (
+    node &&
+    node !== document.body &&
+    node !== document.documentElement
+  ) {
+    chain.unshift(node);
+    node = node.parentElement;
+  }
+
+  const path = chain
+    .filter((n, idx) => idx === chain.length - 1 || isBreadcrumbCandidate(n))
+    .slice(-5)
+    .map((n, idx, arr) => (idx === arr.length - 1 ? labelTarget(n) : shortLabel(n)));
+  return ['Page', ...path];
+}
+
+function isBreadcrumbCandidate(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (MEANINGFUL_TAGS.has(tag)) return true;
+  if (el.getAttribute('role')) return true;
+  const cls = readClassName(el);
+  if (cls && MEANINGFUL_CLASS_REGEX.test(cls)) return true;
+  return false;
+}
+
+function shortLabel(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'section' || tag === 'article') {
+    const heading = el.querySelector('h1, h2, h3');
+    const text = heading?.textContent?.trim().slice(0, 24);
+    return text ? text : titleCase(tag);
+  }
+  if (tag === 'header') return 'Header';
+  if (tag === 'footer') return 'Footer';
+  if (tag === 'nav') return 'Nav';
+  if (tag === 'aside') return 'Sidebar';
+  if (tag === 'main') return 'Main';
+  if (tag === 'form') return 'Form';
+  if (tag === 'figure' || tag === 'picture') return 'Figure';
+  if (tag === 'ul' || tag === 'ol' || tag === 'menu') return 'List';
+  const meaningful = matchMeaningfulClass(el);
+  if (meaningful) return titleCase(meaningful);
+  return tag;
 }
 
 export function resolveSelectedElement(target: SelectedTarget): Element | null {

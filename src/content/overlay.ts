@@ -1,7 +1,9 @@
+export type SelectionState = 'locked' | 'editing' | 'edited';
+
 export type OverlayHandles = {
   showHover: (rect: DOMRect) => void;
   hideHover: () => void;
-  showSelection: (rect: DOMRect, label: string) => void;
+  showSelection: (rect: DOMRect, label: string, state: SelectionState) => void;
   hideSelection: () => void;
   showBanner: (text?: string) => void;
   hideBanner: () => void;
@@ -43,9 +45,12 @@ export function createOverlay(): OverlayHandles {
     hideHover() {
       hover.style.display = 'none';
     },
-    showSelection(rect, label) {
+    showSelection(rect, label, state) {
       positionBox(selection, rect);
-      selectionLabel.textContent = label;
+      const prefix =
+        state === 'editing' ? '✏️ Editing · ' : state === 'edited' ? '✳︎ Edited · ' : '🔒 Locked · ';
+      selectionLabel.textContent = `${prefix}${label}`;
+      selection.dataset.state = state;
       selection.style.display = 'block';
     },
     hideSelection() {
@@ -104,6 +109,20 @@ function ensureStyles() {
       background: rgba(34, 197, 94, 0.10);
       box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
     }
+    #${OVERLAY_IDS.selection}[data-state="editing"] {
+      border-color: rgba(147, 51, 234, 0.95);
+      background: rgba(147, 51, 234, 0.10);
+    }
+    #${OVERLAY_IDS.selection}[data-state="edited"] {
+      border-color: rgba(234, 88, 12, 0.95);
+      background: rgba(234, 88, 12, 0.10);
+    }
+    #${OVERLAY_IDS.selection}[data-state="editing"] .ifl-label {
+      background: rgba(88, 28, 135, 0.95);
+    }
+    #${OVERLAY_IDS.selection}[data-state="edited"] .ifl-label {
+      background: rgba(124, 45, 18, 0.95);
+    }
     #${OVERLAY_IDS.selection} .ifl-label {
       position: absolute;
       top: -26px;
@@ -144,6 +163,10 @@ function ensureStyles() {
       background: rgba(88, 101, 242, 0.14);
     }
     html.ifl-refine-mode, html.ifl-refine-mode * { cursor: crosshair !important; }
+    html.ifl-refine-mode .${OVERLAY_IDS.inlineEditable},
+    html.ifl-refine-mode .${OVERLAY_IDS.inlineEditable} * {
+      cursor: text !important;
+    }
   `;
   document.head.appendChild(style);
 }
