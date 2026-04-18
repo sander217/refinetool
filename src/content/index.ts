@@ -52,9 +52,9 @@ if (!globalState.__iflContentScriptInitialized__) {
   let refreshFrame = 0;
 
   const REFINE_BANNER =
-    'Refine — click a region · [ ] parent·child · , . prev·next · R reselect · ESC exit';
+    'Refine — hold ⌘ (or Ctrl) and click a region · ESC exit';
   const SELECTION_BANNER =
-    'Locked — [ ] parent·child · , . prev·next sibling · Opt+↑↓←→ · R reselect · ESC exit';
+    'Locked — ↑ parent · ↓ child · ← prev · → next · R reselect · ESC exit';
 
   function isOverlayNode(el: Element | null): boolean {
     if (!el) return false;
@@ -68,11 +68,28 @@ if (!globalState.__iflContentScriptInitialized__) {
     return el;
   }
 
+  // Modifier-held = "picking mode". Without it, refine mode is passive so the
+  // user can still interact with the page normally (click buttons, drag text).
+  const isPickingModifier = (event: MouseEvent | PointerEvent | KeyboardEvent) =>
+    event.metaKey || event.ctrlKey;
+
+  function setPickingClass(active: boolean) {
+    document.documentElement.classList.toggle('ifl-picking-active', active);
+  }
+
   function onPointerMove(event: PointerEvent) {
   if (!refineEnabled || !overlay) return;
-  if (inlineTextMode || selectionLocked) {
-    // Inline editing or locked selection: freeze the overlay — don't paint
-    // fresh hover outlines over the thing the user is about to click.
+  if (!isPickingModifier(event)) {
+    // Modifier not held — hide any lingering hover so the page feels normal.
+    if (currentHover) {
+      overlay.hideHover();
+      currentHover = null;
+    }
+    setPickingClass(false);
+    return;
+  }
+  setPickingClass(true);
+  if (inlineTextMode) {
     if (currentHover) {
       overlay.hideHover();
       currentHover = null;
@@ -93,21 +110,13 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onClickCapture(event: MouseEvent) {
   if (!refineEnabled) return;
-
-  // While inline text is active, let clicks on editable text focus the
-  // contenteditable node natively. Intercepting here was swallowing the
-  // focus click, which made "Inline text edit" do nothing.
-  if (inlineTextMode) {
-    const raw = event.target instanceof Element ? event.target : null;
-    if (raw && (raw.closest(`.${OVERLAY_IDS.inlineEditable}`) || (raw as HTMLElement).isContentEditable)) {
-      return;
-    }
-  }
+  // Only hijack clicks when the user explicitly opts in with ⌘/Ctrl. All
+  // other clicks pass through so the user can click buttons, drag text, etc.
+  if (!isPickingModifier(event)) return;
 
   event.preventDefault();
   event.stopImmediatePropagation();
 
-  // Clicking always re-selects, even when the previous selection is locked.
   const raw = document.elementFromPoint(event.clientX, event.clientY) ?? currentHover ?? null;
   const picked = pickMeaningfulTarget(isOverlayNode(raw) ? null : raw);
   if (!picked) return;
@@ -116,6 +125,11 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onKeyDown(event: KeyboardEvent) {
   if (!refineEnabled) return;
+
+  if (event.key === 'Meta' || event.key === 'Control') {
+    setPickingClass(true);
+    return;
+  }
 
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -127,19 +141,16 @@ if (!globalState.__iflContentScriptInitialized__) {
     return;
   }
 
-  // Cycling: bracket keys (no modifier) or Option+Arrow. Only meaningful when
-  // a selection exists — otherwise there's nothing to cycle from.
-  const wantsParent =
-    event.key === '[' || (event.altKey && event.key === 'ArrowUp');
-  const wantsChild =
-    event.key === ']' || (event.altKey && event.key === 'ArrowDown');
-  const wantsPrev =
-    event.key === ',' || (event.altKey && event.key === 'ArrowLeft');
-  const wantsNext =
-    event.key === '.' || (event.altKey && event.key === 'ArrowRight');
-  const wantsUnlock = event.key === 'r' || event.key === 'R';
-
   if (!activePending || !selectionVisible) return;
+
+  // Skip navigation if the user is typing in an input / textarea / editable.
+  if (isTypingContext(event.target)) return;
+
+  const wantsParent = event.key === 'ArrowUp' || event.key === '[';
+  const wantsChild = event.key === 'ArrowDown' || event.key === ']';
+  const wantsPrev = event.key === 'ArrowLeft';
+  const wantsNext = event.key === 'ArrowRight';
+  const wantsUnlock = event.key === 'r' || event.key === 'R';
 
   if (wantsParent) {
     event.preventDefault();
@@ -173,6 +184,34 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
   }
 
+  function onKeyUp(event: KeyboardEvent) {
+  if (!refineEnabled) return;
+  if (event.key === 'Meta' || event.key === 'Control') {
+    setPickingClass(false);
+    if (currentHover) {
+      overlay?.hideHover();
+      currentHover = null;
+    }
+  }
+  }
+
+  function isTypingContext(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
+  }
+
+  function onWindowBlur() {
+  // Cmd-tabbing away drops the modifier without firing keyup — reset so the
+  // next pointermove starts clean.
+  setPickingClass(false);
+  if (currentHover) {
+    overlay?.hideHover();
+    currentHover = null;
+  }
+  }
+
   function setRefineEnabled(enabled: boolean, opts: { keepSelection?: boolean } = {}) {
   if (refineEnabled === enabled) return;
   refineEnabled = enabled;
@@ -183,10 +222,15 @@ if (!globalState.__iflContentScriptInitialized__) {
     window.addEventListener('pointermove', onPointerMove, true);
     window.addEventListener('click', onClickCapture, true);
     window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    window.addEventListener('blur', onWindowBlur, true);
   } else {
     window.removeEventListener('pointermove', onPointerMove, true);
     window.removeEventListener('click', onClickCapture, true);
     window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
+    window.removeEventListener('blur', onWindowBlur, true);
+    setPickingClass(false);
     document.documentElement.classList.remove('ifl-refine-mode');
     overlay?.hideBanner();
     overlay?.hideHover();

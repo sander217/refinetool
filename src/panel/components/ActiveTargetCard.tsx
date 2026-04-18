@@ -85,12 +85,9 @@ export function ActiveTargetCard({
           <code>&lt;{target.tag}&gt;</code>
           {target.hasImage ? <span className="ifl-tag"> image block</span> : null}
         </dd>
-        <dt>Selector</dt>
-        <dd><code>{target.selector}</code></dd>
-        <dt>Bounds</dt>
+        <dt>Size</dt>
         <dd>
-          {target.boundingBox.width}×{target.boundingBox.height}px @ (
-          {target.boundingBox.x}, {target.boundingBox.y})
+          {target.boundingBox.width}×{target.boundingBox.height}px
         </dd>
       </dl>
 

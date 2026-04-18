@@ -162,7 +162,7 @@ function ensureStyles() {
       outline-style: solid;
       background: rgba(88, 101, 242, 0.14);
     }
-    html.ifl-refine-mode, html.ifl-refine-mode * { cursor: crosshair !important; }
+    html.ifl-picking-active, html.ifl-picking-active * { cursor: crosshair !important; }
     html.ifl-refine-mode .${OVERLAY_IDS.inlineEditable},
     html.ifl-refine-mode .${OVERLAY_IDS.inlineEditable} * {
       cursor: text !important;
