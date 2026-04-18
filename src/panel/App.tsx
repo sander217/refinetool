@@ -82,6 +82,9 @@ export default function App() {
       if (msg.type === 'REFINE_MODE_CHANGED') {
         setRefineEnabled(msg.enabled);
       }
+      if (msg.type === 'INLINE_TEXT_STATE_CHANGED') {
+        setInlineTextEditing(msg.active);
+      }
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);

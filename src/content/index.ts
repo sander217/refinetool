@@ -5,6 +5,7 @@ import {
   buildSelectedTarget,
   describeChildren,
   describeEditableTextTarget,
+  findEditableTextLeafAt,
   findImageTarget,
   generateSelector,
   getEditableTextElements,
@@ -118,9 +119,59 @@ if (!globalState.__iflContentScriptInitialized__) {
   event.stopImmediatePropagation();
 
   const raw = document.elementFromPoint(event.clientX, event.clientY) ?? currentHover ?? null;
-  const picked = pickMeaningfulTarget(isOverlayNode(raw) ? null : raw);
+  const cleaned = isOverlayNode(raw) ? null : raw;
+  if (!cleaned) return;
+
+  // If the click landed on a text leaf (heading, paragraph, button label…),
+  // jump straight into edit mode on that leaf. The region itself is still the
+  // enclosing meaningful container so non-text edits (hide/remove/image) keep
+  // applying to the full block.
+  const textLeaf = findEditableTextLeafAt(cleaned);
+  const picked = pickMeaningfulTarget(cleaned);
   if (!picked) return;
-  selectRegion(picked, { revertPreviousPending: true, disableRefineMode: false });
+
+  const stayInSameRegion =
+    !!(textLeaf && selectedElement && selectedElement.contains(textLeaf));
+
+  if (!stayInSameRegion) {
+    selectRegion(picked, { revertPreviousPending: true, disableRefineMode: false });
+  }
+
+  if (textLeaf) {
+    autoEnterInlineTextEdit(textLeaf);
+  }
+  }
+
+  function autoEnterInlineTextEdit(leaf: HTMLElement) {
+  const region = resolveCurrentSelection();
+  if (!region) return;
+  if (!inlineTextMode) {
+    const res = startInlineTextEdit(region);
+    if (!res.ok) return;
+    notifyInlineTextState(true);
+  }
+  // Wait one frame so startInlineTextEdit's DOM writes settle before focus.
+  requestAnimationFrame(() => {
+    if (!document.contains(leaf)) return;
+    leaf.focus({ preventScroll: false });
+    placeCaretAtEnd(leaf);
+  });
+  }
+
+  function placeCaretAtEnd(el: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  }
+
+  function notifyInlineTextState(active: boolean) {
+  chrome.runtime
+    .sendMessage({ type: 'INLINE_TEXT_STATE_CHANGED', active } satisfies ExtensionMessage)
+    .catch(() => {});
   }
 
   function onKeyDown(event: KeyboardEvent) {
@@ -515,7 +566,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   selectionVisible = true;
   refreshSelectionOverlay();
   overlay?.showBanner(
-    'Inline Text Edit — click text inside the selected region, edit it, then click away to capture the diff',
+    'Editing text — type, click away to capture · ⌘+click another text to jump · ESC to cancel',
   );
 
   const nextOriginals = new Map(textOriginals);
@@ -542,6 +593,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   function stopInlineTextEdit() {
   if (!inlineTextMode) return;
   inlineTextMode = false;
+  notifyInlineTextState(false);
   window.removeEventListener('focusin', onInlineFocus, true);
   window.removeEventListener('focusout', onInlineBlur, true);
   window.removeEventListener('keydown', onInlineEditorKeyDown, true);

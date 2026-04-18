@@ -470,6 +470,33 @@ export function findImageTarget(root: Element): HTMLImageElement | null {
   return null;
 }
 
+// When the user clicks directly on a text node (button label, heading, p,
+// etc.) we want to skip "lock the containing region and wait" and go straight
+// into edit mode on that exact text. This finds the nearest text leaf under
+// the click, or null if the click didn't land on one.
+export function findEditableTextLeafAt(raw: Element): HTMLElement | null {
+  let node: Element | null = raw;
+  while (node && node !== document.body && node !== document.documentElement) {
+    if (node instanceof HTMLElement && isLikelyEditableTextLeaf(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function isLikelyEditableTextLeaf(el: HTMLElement): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (!EDITABLE_TEXT_TAGS.has(tag)) return false;
+  if (el.isContentEditable) return false;
+  const text = (el.innerText ?? el.textContent ?? '').trim();
+  if (!text) return false;
+  // Inline wrappers (span/strong/em/small) qualify only when they hold plain
+  // text — otherwise we'd accidentally grab a wrapper over nested markup.
+  if (tag === 'span' || tag === 'strong' || tag === 'em' || tag === 'small') {
+    return el.children.length === 0;
+  }
+  return true;
+}
+
 export function getEditableTextElements(root: Element): HTMLElement[] {
   const candidates = new Set<HTMLElement>();
   const rootEl = root as HTMLElement;
