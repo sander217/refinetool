@@ -10,6 +10,7 @@ import {
   generateSelector,
   getEditableTextElements,
   getElementTextValue,
+  labelTarget,
   pickMeaningfulTarget,
   pickStableTarget,
   resolveSelectedElement,
@@ -17,6 +18,7 @@ import {
   walkToParentBlock,
   walkToSiblingBlock,
 } from './dom';
+import { STORAGE_KEYS } from '../shared/types';
 import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
 
 const globalState = globalThis as typeof globalThis & {
@@ -106,7 +108,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
   if (target === currentHover) return;
   currentHover = target;
-  overlay.showHover(target.getBoundingClientRect());
+  overlay.showHover(target.getBoundingClientRect(), labelTarget(target));
   }
 
   function onClickCapture(event: MouseEvent) {
@@ -114,6 +116,9 @@ if (!globalState.__iflContentScriptInitialized__) {
   // Only hijack clicks when the user explicitly opts in with ⌘/Ctrl. All
   // other clicks pass through so the user can click buttons, drag text, etc.
   if (!isPickingModifier(event)) return;
+  // While editing, freeze selection changes — user must ESC / Stop first.
+  // Prevents accidentally wiping an edit by ⌘-clicking elsewhere.
+  if (inlineTextMode) return;
 
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -185,6 +190,14 @@ if (!globalState.__iflContentScriptInitialized__) {
   if (event.key === 'Escape') {
     event.preventDefault();
     event.stopImmediatePropagation();
+    // Two-stage exit: first Esc leaves edit mode but keeps the region
+    // locked; second Esc leaves refine mode entirely.
+    if (inlineTextMode) {
+      stopInlineTextEdit();
+      refreshSelectionOverlay();
+      overlay?.showBanner(SELECTION_BANNER);
+      return;
+    }
     setRefineEnabled(false);
     chrome.runtime
       .sendMessage({ type: 'SET_REFINE_MODE', enabled: false } satisfies ExtensionMessage)
@@ -566,7 +579,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   selectionVisible = true;
   refreshSelectionOverlay();
   overlay?.showBanner(
-    'Editing text — type, click away to capture · ⌘+click another text to jump · ESC to cancel',
+    'Editing text — type · click other text in this region to jump · ESC to exit edit mode',
   );
 
   const nextOriginals = new Map(textOriginals);
@@ -921,6 +934,22 @@ if (!globalState.__iflContentScriptInitialized__) {
     if (msg.type === 'APPLY_DIRECT_EDIT') {
       sendResponse(applyDirectEdit(msg.action));
     }
+  });
+
+  // Panel rename writes to storage — mirror the label into activePending so
+  // the on-page selection overlay stays in sync with what the user typed.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    const pendingChange = changes[STORAGE_KEYS.pending];
+    if (!pendingChange) return;
+    const next = pendingChange.newValue as { target?: { label?: string } } | undefined;
+    if (!next?.target?.label || !activePending) return;
+    if (next.target.label === activePending.target.label) return;
+    activePending = {
+      ...activePending,
+      target: { ...activePending.target, label: next.target.label },
+    };
+    refreshSelectionOverlay();
   });
 
   window.addEventListener('click', onDocumentClick, true);

@@ -1,7 +1,7 @@
 export type SelectionState = 'locked' | 'editing' | 'edited';
 
 export type OverlayHandles = {
-  showHover: (rect: DOMRect) => void;
+  showHover: (rect: DOMRect, label?: string) => void;
   hideHover: () => void;
   showSelection: (rect: DOMRect, label: string, state: SelectionState) => void;
   hideSelection: () => void;
@@ -24,6 +24,9 @@ export function createOverlay(): OverlayHandles {
 
   const hover = spawn('div', OVERLAY_IDS.hover);
   hover.style.display = 'none';
+  const hoverLabel = document.createElement('span');
+  hoverLabel.className = 'ifl-label ifl-label-hover';
+  hover.appendChild(hoverLabel);
 
   const selection = spawn('div', OVERLAY_IDS.selection);
   selection.style.display = 'none';
@@ -38,8 +41,14 @@ export function createOverlay(): OverlayHandles {
   document.documentElement.append(hover, selection, banner);
 
   return {
-    showHover(rect) {
+    showHover(rect, label) {
       positionBox(hover, rect);
+      if (label) {
+        hoverLabel.textContent = label;
+        hoverLabel.style.display = 'inline-block';
+      } else {
+        hoverLabel.style.display = 'none';
+      }
       hover.style.display = 'block';
     },
     hideHover() {
@@ -123,7 +132,11 @@ function ensureStyles() {
     #${OVERLAY_IDS.selection}[data-state="edited"] .ifl-label {
       background: rgba(124, 45, 18, 0.95);
     }
-    #${OVERLAY_IDS.selection} .ifl-label {
+    .ifl-label-hover {
+      background: rgba(88, 101, 242, 0.95) !important;
+    }
+    #${OVERLAY_IDS.selection} .ifl-label,
+    #${OVERLAY_IDS.hover} .ifl-label {
       position: absolute;
       top: -26px;
       left: 0;
