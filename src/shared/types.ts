@@ -29,12 +29,29 @@ export type ParsedRefinement = {
   designIntent: string;
   constraints: string[];
   implementationNotes: string[];
+  // Aspects of the selected region that must survive the change (a11y,
+  // event handlers, data flow, copy the user did not touch, etc.).
+  preserve?: string[];
+  // Regions or concerns outside the selected target that must not be
+  // modified (other sections on the page, unrelated files, shared styles).
+  doNotTouch?: string[];
 };
 
 export type GeneratedPrompts = {
   claude: string;
   codex: string;
   generic: string;
+  // One-paragraph human-readable handoff. Sits alongside the code-agent
+  // prompts so a reviewer can grok the change without parsing the long form.
+  summary?: string;
+};
+
+export type ChangelogKind = 'created' | 'edited' | 'reparsed' | 'regenerated';
+
+export type ChangelogEntry = {
+  at: string;
+  kind: ChangelogKind;
+  note?: string;
 };
 
 type EditDiffBase = {
@@ -50,14 +67,26 @@ export type TextChangeDiff = EditDiffBase & {
   after: string;
 };
 
-export type RemoveDiff = EditDiffBase & { type: 'remove' };
+export type RemoveDiff = EditDiffBase & {
+  type: 'remove';
+  // Short snippet / label of what was removed. Survives the DOM node being
+  // detached so downstream prompts can still reference it concretely.
+  preview?: string;
+};
 
-export type HideDiff = EditDiffBase & { type: 'hide' };
+export type HideDiff = EditDiffBase & {
+  type: 'hide';
+  preview?: string;
+};
 
 export type ReorderDiff = EditDiffBase & {
   type: 'reorder';
   before: string[];
   after: string[];
+  // The label of the child that moved and the direction it was moved. Gives
+  // prompt output a pointable "X moved up past Y" rather than just two lists.
+  movedLabel?: string;
+  direction?: 'up' | 'down';
 };
 
 // Image intents are captured-only — they don't mutate the live DOM. They tell
@@ -88,13 +117,33 @@ export type ImageRegenerateIntentDiff = EditDiffBase & {
   prompt?: string;
 };
 
+// Preview-only style nudges: position (transform translate), font size,
+// border radius, and explicit width/height. One diff per property per
+// region — repeated adjustments update the same diff's `after` value.
+export type StyleProperty =
+  | 'translate'
+  | 'fontSize'
+  | 'borderRadius'
+  | 'width'
+  | 'height';
+
+export type StyleChangeDiff = EditDiffBase & {
+  type: 'style_change';
+  property: StyleProperty;
+  // Human-readable before/after values, e.g. "16px", "translate(4px, -8px)",
+  // "120×40px". Prompt output cites these directly.
+  before: string;
+  after: string;
+};
+
 export type EditDiff =
   | TextChangeDiff
   | RemoveDiff
   | HideDiff
   | ReorderDiff
   | ImageReplaceIntentDiff
-  | ImageRegenerateIntentDiff;
+  | ImageRegenerateIntentDiff
+  | StyleChangeDiff;
 
 export type RefinementItem = {
   id: string;
@@ -108,6 +157,45 @@ export type RefinementItem = {
   diffs: EditDiff[];
   prompts: GeneratedPrompts;
   createdAt: string;
+  // Append-only edit history for the item. Optional because legacy records
+  // from earlier sessions won't have this field.
+  changelog?: ChangelogEntry[];
+};
+
+// Structured, schema-stable output for downstream execution systems. Built
+// from a RefinementItem on demand — not persisted directly.
+export type RefinementArtifact = {
+  schemaVersion: '1';
+  id: string;
+  createdAt: string;
+  page: { url: string; title: string };
+  region: {
+    label: string;
+    selector: string;
+    tag: string;
+    breadcrumb: string[];
+    boundingBox: BoundingBox;
+    snippet: string;
+    hasImage: boolean;
+  };
+  intent: {
+    currentIssue: string;
+    requestedChange: string;
+    designIntent: string;
+    implementationNotes: string[];
+  };
+  constraints: {
+    preserve: string[];
+    doNotTouch: string[];
+    other: string[];
+  };
+  diffs: EditDiff[];
+  userNote: {
+    raw: string;
+    transcript?: string;
+    inputMode: InputMode;
+  };
+  changelog: ChangelogEntry[];
 };
 
 export type PendingSelection = {
@@ -137,6 +225,11 @@ export type DirectEditAction =
     }
   | { type: 'mark_image_regenerate'; prompt?: string }
   | { type: 'clear_image_intent' }
+  | { type: 'nudge_position'; direction: 'up' | 'down' | 'left' | 'right' }
+  | { type: 'adjust_font_size'; direction: 'up' | 'down' }
+  | { type: 'adjust_border_radius'; direction: 'up' | 'down' }
+  | { type: 'adjust_size'; axis: 'width' | 'height'; direction: 'up' | 'down' }
+  | { type: 'reset_style_adjustments' }
   | { type: 'reset_pending_selection'; revert?: boolean };
 
 export const STORAGE_KEYS = {

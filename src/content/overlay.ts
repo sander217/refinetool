@@ -180,6 +180,12 @@ function ensureStyles() {
     html.ifl-refine-mode .${OVERLAY_IDS.inlineEditable} * {
       cursor: text !important;
     }
+    .ifl-reveal-pin,
+    .ifl-reveal-pin * {
+      pointer-events: auto !important;
+      -webkit-user-select: text !important;
+      user-select: text !important;
+    }
   `;
   document.head.appendChild(style);
 }

@@ -3,14 +3,31 @@ import type {
   ImageRegenerateIntentDiff,
   ImageReplaceIntentDiff,
   ReorderDiff,
+  StyleProperty,
 } from './types';
+
+const STYLE_PROPERTY_LABELS: Record<StyleProperty, string> = {
+  translate: 'Position',
+  fontSize: 'Font size',
+  borderRadius: 'Border radius',
+  width: 'Width',
+  height: 'Height',
+};
 
 export function describeEditDiff(diff: EditDiff): string {
   if (diff.type === 'text_change') {
     return `${diff.target}: "${diff.before}" -> "${diff.after}"`;
   }
   if (diff.type === 'reorder') {
+    if (diff.movedLabel && diff.direction) {
+      return `${diff.target}: moved ${diff.direction} within parent`;
+    }
     return `${diff.target}: reordered within parent`;
+  }
+  if (diff.type === 'hide' || diff.type === 'remove') {
+    const action = diff.type === 'hide' ? 'hidden' : 'removed';
+    const preview = diff.preview ? ` — "${diff.preview}"` : '';
+    return `${diff.target}: ${action}${preview}`;
   }
   if (diff.type === 'image_replace_intent') {
     return `${diff.target}: replace image (${describeImageReference(diff)})`;
@@ -19,7 +36,9 @@ export function describeEditDiff(diff: EditDiff): string {
     const hint = diff.prompt ? ` — "${diff.prompt}"` : '';
     return `${diff.target}: regenerate image${hint}`;
   }
-  return `${diff.target}: ${diff.type}`;
+  // style_change
+  const label = STYLE_PROPERTY_LABELS[diff.property];
+  return `${diff.target}: ${label.toLowerCase()} ${diff.before} -> ${diff.after}`;
 }
 
 export function diffTypeLabel(diff: EditDiff): string {
@@ -28,7 +47,8 @@ export function diffTypeLabel(diff: EditDiff): string {
   if (diff.type === 'hide') return 'Hide';
   if (diff.type === 'reorder') return 'Reorder';
   if (diff.type === 'image_replace_intent') return 'Replace image';
-  return 'Regenerate image';
+  if (diff.type === 'image_regenerate_intent') return 'Regenerate image';
+  return STYLE_PROPERTY_LABELS[diff.property];
 }
 
 export function hasVisibilityDiff(diffs: EditDiff[]): boolean {
@@ -42,16 +62,55 @@ export function hasImageIntent(diffs: EditDiff[]): boolean {
   );
 }
 
+export function hasStyleChange(diffs: EditDiff[]): boolean {
+  return diffs.some((diff) => diff.type === 'style_change');
+}
+
+export type DiffCountBreakdown = {
+  total: number;
+  text: number;
+  visibility: number;
+  reorder: number;
+  image: number;
+  style: number;
+};
+
+export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
+  const counts: DiffCountBreakdown = {
+    total: diffs.length,
+    text: 0,
+    visibility: 0,
+    reorder: 0,
+    image: 0,
+    style: 0,
+  };
+  for (const diff of diffs) {
+    if (diff.type === 'text_change') counts.text += 1;
+    else if (diff.type === 'hide' || diff.type === 'remove') counts.visibility += 1;
+    else if (diff.type === 'reorder') counts.reorder += 1;
+    else if (diff.type === 'style_change') counts.style += 1;
+    else counts.image += 1;
+  }
+  return counts;
+}
+
 export function formatEditDiffForPrompt(diff: EditDiff): string {
   if (diff.type === 'text_change') {
     return `- Text change on ${diff.target}: "${diff.before}" -> "${diff.after}"`;
   }
   if (diff.type === 'reorder') {
-    return [
-      `- Reorder ${diff.target}:`,
-      `  Before: ${formatOrder(diff.before)}`,
-      `  After: ${formatOrder(diff.after)}`,
-    ].join('\n');
+    const lines = [`- Reorder ${diff.target}:`];
+    if (diff.movedLabel && diff.direction) {
+      lines.push(`  Moved: ${diff.movedLabel} (${diff.direction})`);
+    }
+    lines.push(`  Before: ${formatOrder(diff.before)}`);
+    lines.push(`  After: ${formatOrder(diff.after)}`);
+    return lines.join('\n');
+  }
+  if (diff.type === 'hide' || diff.type === 'remove') {
+    const lines = [`- ${capitalize(diff.type)} ${diff.target}`];
+    if (diff.preview) lines.push(`  Preview: "${diff.preview}"`);
+    return lines.join('\n');
   }
   if (diff.type === 'image_replace_intent') {
     const lines = [`- Replace image in ${diff.target}`];
@@ -65,7 +124,8 @@ export function formatEditDiffForPrompt(diff: EditDiff): string {
     if (diff.prompt) lines.push(`  Prompt hint: ${diff.prompt}`);
     return lines.join('\n');
   }
-  return `- ${capitalize(diff.type)} ${diff.target}`;
+  const label = STYLE_PROPERTY_LABELS[diff.property];
+  return `- ${label} change on ${diff.target}: ${diff.before} -> ${diff.after}`;
 }
 
 export function formatReorderSummary(diff: ReorderDiff): string {

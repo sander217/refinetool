@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { ImageReferenceKind, PendingSelection } from '../../shared/types';
-import { hasImageIntent, hasVisibilityDiff } from '../../shared/editDiffs';
-import { EditDiffList } from './EditDiffList';
+import { hasImageIntent, hasStyleChange, hasVisibilityDiff } from '../../shared/editDiffs';
+import { ChangesSummary } from './ChangesSummary';
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024; // 8 MB cap
 
@@ -31,6 +31,11 @@ type Props = {
   onAttachImageReference: (payload: AttachImagePayload) => void;
   onMarkImageRegenerate: (prompt?: string) => void;
   onClearImageIntent: () => void;
+  onNudgePosition: (direction: 'up' | 'down' | 'left' | 'right') => void;
+  onAdjustFontSize: (direction: 'up' | 'down') => void;
+  onAdjustBorderRadius: (direction: 'up' | 'down') => void;
+  onAdjustSize: (axis: 'width' | 'height', direction: 'up' | 'down') => void;
+  onResetStyleAdjustments: () => void;
 };
 
 export function ActiveTargetCard({
@@ -49,10 +54,16 @@ export function ActiveTargetCard({
   onAttachImageReference,
   onMarkImageRegenerate,
   onClearImageIntent,
+  onNudgePosition,
+  onAdjustFontSize,
+  onAdjustBorderRadius,
+  onAdjustSize,
+  onResetStyleAdjustments,
 }: Props) {
   const { target, pageTitle, pageUrl } = pending;
   const blockedByVisibility = hasVisibilityDiff(pending.diffs);
   const imageIntentActive = hasImageIntent(pending.diffs);
+  const styleAdjustmentsActive = hasStyleChange(pending.diffs);
 
   return (
     <section className="ifl-card ifl-card-accent">
@@ -90,6 +101,8 @@ export function ActiveTargetCard({
           {target.boundingBox.width}×{target.boundingBox.height}px
         </dd>
       </dl>
+
+      <ChangesSummary diffs={pending.diffs} />
 
       <div className="ifl-field">
         <div className="ifl-label">Preview actions</div>
@@ -136,6 +149,17 @@ export function ActiveTargetCard({
         {editError ? <p className="ifl-error">{editError}</p> : null}
       </div>
 
+      <AdjustPanel
+        isApplyingEdit={isApplyingEdit}
+        blockedByVisibility={blockedByVisibility}
+        styleAdjustmentsActive={styleAdjustmentsActive}
+        onNudgePosition={onNudgePosition}
+        onAdjustFontSize={onAdjustFontSize}
+        onAdjustBorderRadius={onAdjustBorderRadius}
+        onAdjustSize={onAdjustSize}
+        onResetStyleAdjustments={onResetStyleAdjustments}
+      />
+
       {target.hasImage ? (
         <ImageIntentPanel
           isApplyingEdit={isApplyingEdit}
@@ -145,15 +169,177 @@ export function ActiveTargetCard({
           onClearImageIntent={onClearImageIntent}
         />
       ) : null}
-
-      <div className="ifl-field">
-        <div className="ifl-label">Captured diffs</div>
-        <EditDiffList
-          diffs={pending.diffs}
-          emptyLabel="No direct edits captured for this region yet."
-        />
-      </div>
     </section>
+  );
+}
+
+function AdjustPanel({
+  isApplyingEdit,
+  blockedByVisibility,
+  styleAdjustmentsActive,
+  onNudgePosition,
+  onAdjustFontSize,
+  onAdjustBorderRadius,
+  onAdjustSize,
+  onResetStyleAdjustments,
+}: {
+  isApplyingEdit: boolean;
+  blockedByVisibility: boolean;
+  styleAdjustmentsActive: boolean;
+  onNudgePosition: Props['onNudgePosition'];
+  onAdjustFontSize: Props['onAdjustFontSize'];
+  onAdjustBorderRadius: Props['onAdjustBorderRadius'];
+  onAdjustSize: Props['onAdjustSize'];
+  onResetStyleAdjustments: Props['onResetStyleAdjustments'];
+}) {
+  const disabled = isApplyingEdit || blockedByVisibility;
+  return (
+    <div className="ifl-field">
+      <div className="ifl-row-between">
+        <div className="ifl-label">Adjust</div>
+        {styleAdjustmentsActive ? (
+          <button
+            className="ifl-button-ghost"
+            disabled={isApplyingEdit}
+            onClick={onResetStyleAdjustments}
+          >
+            Reset adjustments
+          </button>
+        ) : null}
+      </div>
+      <div className="ifl-adjust-grid">
+        <div className="ifl-adjust-row">
+          <span className="ifl-adjust-label">Position</span>
+          <div className="ifl-adjust-pad">
+            <span />
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onNudgePosition('up')}
+              aria-label="Nudge up"
+            >
+              ↑
+            </button>
+            <span />
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onNudgePosition('left')}
+              aria-label="Nudge left"
+            >
+              ←
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onNudgePosition('down')}
+              aria-label="Nudge down"
+            >
+              ↓
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onNudgePosition('right')}
+              aria-label="Nudge right"
+            >
+              →
+            </button>
+          </div>
+        </div>
+
+        <div className="ifl-adjust-row">
+          <span className="ifl-adjust-label">Font size</span>
+          <div className="ifl-row">
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustFontSize('down')}
+              aria-label="Decrease font size"
+            >
+              A−
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustFontSize('up')}
+              aria-label="Increase font size"
+            >
+              A+
+            </button>
+          </div>
+        </div>
+
+        <div className="ifl-adjust-row">
+          <span className="ifl-adjust-label">Radius</span>
+          <div className="ifl-row">
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustBorderRadius('down')}
+              aria-label="Decrease border radius"
+            >
+              ◻−
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustBorderRadius('up')}
+              aria-label="Increase border radius"
+            >
+              ◯+
+            </button>
+          </div>
+        </div>
+
+        <div className="ifl-adjust-row">
+          <span className="ifl-adjust-label">Width</span>
+          <div className="ifl-row">
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustSize('width', 'down')}
+              aria-label="Decrease width"
+            >
+              W−
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustSize('width', 'up')}
+              aria-label="Increase width"
+            >
+              W+
+            </button>
+          </div>
+        </div>
+
+        <div className="ifl-adjust-row">
+          <span className="ifl-adjust-label">Height</span>
+          <div className="ifl-row">
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustSize('height', 'down')}
+              aria-label="Decrease height"
+            >
+              H−
+            </button>
+            <button
+              className="ifl-button-ghost ifl-adjust-btn"
+              disabled={disabled}
+              onClick={() => onAdjustSize('height', 'up')}
+              aria-label="Increase height"
+            >
+              H+
+            </button>
+          </div>
+        </div>
+      </div>
+      <p className="ifl-subtle ifl-subtle-small">
+        Position nudges in 4px steps via transform. Font/radius in 1–2px; size in 8px.
+      </p>
+    </div>
   );
 }
 

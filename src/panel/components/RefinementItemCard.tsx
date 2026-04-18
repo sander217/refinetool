@@ -1,6 +1,11 @@
 import { useState } from 'react';
-import type { ParsedRefinement, RefinementItem } from '../../shared/types';
+import type {
+  ChangelogEntry,
+  ParsedRefinement,
+  RefinementItem,
+} from '../../shared/types';
 import { combinePromptsMarkdown } from '../../services/promptTemplates';
+import { buildArtifact, serializeArtifact } from '../../services/artifact';
 import { downloadBlob, exportItemJson } from '../../services/export';
 import { EditDiffList } from './EditDiffList';
 
@@ -12,7 +17,10 @@ type Props = {
   onDelete: () => void;
 };
 
-const PROMPT_TABS: Array<{ key: keyof RefinementItem['prompts']; label: string }> = [
+type PromptKey = 'summary' | 'claude' | 'codex' | 'generic';
+
+const PROMPT_TABS: Array<{ key: PromptKey; label: string }> = [
+  { key: 'summary', label: 'Handoff' },
   { key: 'claude', label: 'Claude Code' },
   { key: 'codex', label: 'Codex' },
   { key: 'generic', label: 'Generic' },
@@ -30,8 +38,7 @@ export function RefinementItemCard({
   const [noteDraft, setNoteDraft] = useState(item.rawInput);
   const [editingParsed, setEditingParsed] = useState(false);
   const [parsedDraft, setParsedDraft] = useState<ParsedRefinement>(item.parsed);
-  const [activePrompt, setActivePrompt] =
-    useState<keyof RefinementItem['prompts']>('claude');
+  const [activePrompt, setActivePrompt] = useState<PromptKey>('summary');
   const [copied, setCopied] = useState<string | null>(null);
 
   const doCopy = async (key: string, text: string) => {
@@ -39,6 +46,9 @@ export function RefinementItemCard({
     setCopied(key);
     setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500);
   };
+
+  const promptText = item.prompts[activePrompt] ?? '';
+  const activeTab = PROMPT_TABS.find((p) => p.key === activePrompt);
 
   return (
     <article className="ifl-card ifl-item">
@@ -181,21 +191,27 @@ export function RefinementItemCard({
                 </button>
               ))}
             </div>
-            <pre className="ifl-prompt">{item.prompts[activePrompt]}</pre>
+            <pre className="ifl-prompt">{promptText || <em className="ifl-subtle">(not generated)</em>}</pre>
             <div className="ifl-row-end">
               <button
                 className="ifl-button"
-                onClick={() => doCopy(`prompt-${activePrompt}`, item.prompts[activePrompt])}
+                onClick={() => doCopy(`prompt-${activePrompt}`, promptText)}
               >
                 {copied === `prompt-${activePrompt}`
                   ? 'Copied!'
-                  : `Copy ${PROMPT_TABS.find((p) => p.key === activePrompt)?.label}`}
+                  : `Copy ${activeTab?.label ?? 'prompt'}`}
               </button>
               <button
                 className="ifl-button-ghost"
                 onClick={() => doCopy('combined', combinePromptsMarkdown(item))}
               >
                 {copied === 'combined' ? 'Copied!' : 'Copy combined'}
+              </button>
+              <button
+                className="ifl-button-ghost"
+                onClick={() => doCopy('artifact', serializeArtifact(buildArtifact(item)))}
+              >
+                {copied === 'artifact' ? 'Copied!' : 'Copy artifact JSON'}
               </button>
               <button
                 className="ifl-button-ghost"
@@ -212,6 +228,8 @@ export function RefinementItemCard({
             </div>
           </div>
 
+          <ChangelogView entries={item.changelog ?? []} />
+
           <div className="ifl-row-end">
             <button className="ifl-button-danger" onClick={onDelete}>
               Delete
@@ -223,38 +241,52 @@ export function RefinementItemCard({
   );
 }
 
+function ChangelogView({ entries }: { entries: ChangelogEntry[] }) {
+  if (entries.length === 0) return null;
+  const recent = entries.slice(-5).reverse();
+  return (
+    <div className="ifl-field">
+      <div className="ifl-label">Changelog</div>
+      <ul className="ifl-changelog">
+        {recent.map((entry, i) => (
+          <li key={`${entry.at}-${i}`}>
+            <span className="ifl-changelog-kind">{entry.kind}</span>
+            <span className="ifl-changelog-at">{new Date(entry.at).toLocaleString()}</span>
+            {entry.note ? <span className="ifl-changelog-note">— {entry.note}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ParsedView({ parsed }: { parsed: ParsedRefinement }) {
   return (
     <dl className="ifl-meta">
       <dt>Target</dt><dd>{parsed.target}</dd>
-      <dt>Issue</dt><dd>{parsed.currentIssue}</dd>
-      <dt>Change</dt><dd>{parsed.requestedChange}</dd>
-      <dt>Intent</dt><dd>{parsed.designIntent}</dd>
-      <dt>Constraints</dt>
-      <dd>
-        {parsed.constraints.length ? (
-          <ul className="ifl-list">
-            {parsed.constraints.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
-        ) : (
-          <em className="ifl-subtle">none</em>
-        )}
-      </dd>
+      <dt>Issue</dt><dd>{parsed.currentIssue || <em className="ifl-subtle">none</em>}</dd>
+      <dt>Change</dt><dd>{parsed.requestedChange || <em className="ifl-subtle">none</em>}</dd>
+      <dt>Intent</dt><dd>{parsed.designIntent || <em className="ifl-subtle">none</em>}</dd>
+      <dt>Preserve</dt>
+      <dd>{renderList(parsed.preserve ?? [])}</dd>
+      <dt>Do not touch</dt>
+      <dd>{renderList(parsed.doNotTouch ?? [])}</dd>
+      <dt>Other constraints</dt>
+      <dd>{renderList(parsed.constraints)}</dd>
       <dt>Implementation direction</dt>
-      <dd>
-        {parsed.implementationNotes.length ? (
-          <ul className="ifl-list">
-            {parsed.implementationNotes.map((note, i) => (
-              <li key={i}>{note}</li>
-            ))}
-          </ul>
-        ) : (
-          <em className="ifl-subtle">none</em>
-        )}
-      </dd>
+      <dd>{renderList(parsed.implementationNotes)}</dd>
     </dl>
+  );
+}
+
+function renderList(list: string[]) {
+  if (!list.length) return <em className="ifl-subtle">none</em>;
+  return (
+    <ul className="ifl-list">
+      {list.map((entry, i) => (
+        <li key={i}>{entry}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -267,6 +299,12 @@ function ParsedEditor({
 }) {
   const update = <K extends keyof ParsedRefinement>(key: K, v: ParsedRefinement[K]) =>
     onChange({ ...value, [key]: v });
+
+  const parseLines = (raw: string) =>
+    raw
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
 
   return (
     <div className="ifl-form">
@@ -299,18 +337,26 @@ function ParsedEditor({
         />
       </label>
       <label>
-        <span>Constraints (one per line)</span>
+        <span>Preserve (one per line)</span>
+        <textarea
+          value={(value.preserve ?? []).join('\n')}
+          onChange={(e) => update('preserve', parseLines(e.currentTarget.value))}
+          rows={3}
+        />
+      </label>
+      <label>
+        <span>Do not touch (one per line)</span>
+        <textarea
+          value={(value.doNotTouch ?? []).join('\n')}
+          onChange={(e) => update('doNotTouch', parseLines(e.currentTarget.value))}
+          rows={3}
+        />
+      </label>
+      <label>
+        <span>Other constraints (one per line)</span>
         <textarea
           value={value.constraints.join('\n')}
-          onChange={(e) =>
-            update(
-              'constraints',
-              e.currentTarget.value
-                .split(/\n+/)
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
+          onChange={(e) => update('constraints', parseLines(e.currentTarget.value))}
           rows={3}
         />
       </label>
@@ -318,15 +364,7 @@ function ParsedEditor({
         <span>Implementation direction (one per line)</span>
         <textarea
           value={value.implementationNotes.join('\n')}
-          onChange={(e) =>
-            update(
-              'implementationNotes',
-              e.currentTarget.value
-                .split(/\n+/)
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
+          onChange={(e) => update('implementationNotes', parseLines(e.currentTarget.value))}
           rows={4}
         />
       </label>

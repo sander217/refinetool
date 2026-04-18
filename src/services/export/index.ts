@@ -30,14 +30,22 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       ``,
       it.transcript ? `### Transcript\n${it.transcript}\n` : '',
       `### Parsed`,
-      `- Issue: ${it.parsed.currentIssue}`,
-      `- Change: ${it.parsed.requestedChange}`,
-      `- Intent: ${it.parsed.designIntent}`,
+      `- Issue: ${it.parsed.currentIssue || '_(none)_'}`,
+      `- Change: ${it.parsed.requestedChange || '_(none)_'}`,
+      `- Intent: ${it.parsed.designIntent || '_(none)_'}`,
       `- Implementation direction:`,
       ...(it.parsed.implementationNotes.length
         ? it.parsed.implementationNotes.map((note) => `  - ${note}`)
         : ['  - _(none)_']),
-      `- Constraints:`,
+      `- Preserve:`,
+      ...((it.parsed.preserve ?? []).length
+        ? (it.parsed.preserve ?? []).map((c) => `  - ${c}`)
+        : ['  - _(none)_']),
+      `- Do not touch:`,
+      ...((it.parsed.doNotTouch ?? []).length
+        ? (it.parsed.doNotTouch ?? []).map((c) => `  - ${c}`)
+        : ['  - _(none)_']),
+      `- Other constraints:`,
       ...(it.parsed.constraints.length
         ? it.parsed.constraints.map((c) => `  - ${c}`)
         : ['  - _(none)_']),
@@ -59,6 +67,10 @@ export function exportItemsMarkdown(items: RefinementItem[]): string {
       '```text',
       it.prompts.generic,
       '```',
+      ``,
+      ...(it.prompts.summary
+        ? [`### Handoff summary`, it.prompts.summary, ``]
+        : []),
     ].join('\n'),
   );
 

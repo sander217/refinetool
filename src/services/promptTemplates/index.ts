@@ -1,42 +1,16 @@
 import type {
   EditDiff,
   GeneratedPrompts,
-  ParsedRefinement,
+  RefinementArtifact,
   RefinementItem,
-  SelectedTarget,
 } from '../../shared/types';
 import { describeImageReference, formatEditDiffForPrompt } from '../../shared/editDiffs';
-
-export type PromptContext = {
-  parsed: ParsedRefinement;
-  target: SelectedTarget;
-  pageUrl: string;
-  pageTitle: string;
-  rawInput: string;
-  transcript?: string;
-  diffs: EditDiff[];
-};
+import { buildArtifact } from '../artifact';
 
 export interface PromptTemplate {
   readonly id: string;
-  render(ctx: PromptContext): string;
+  render(artifact: RefinementArtifact): string;
 }
-
-const formatConstraints = (c: string[]): string =>
-  c.length ? c.map((x) => `- ${x}`).join('\n') : '- Preserve the component\'s existing behavior';
-
-const formatImplementationNotes = (notes: string[]): string =>
-  notes.length
-    ? notes.map((note) => `- ${note}`).join('\n')
-    : '- Inspect the current component structure and extend it without unrelated refactors';
-
-const formatBbox = (b: SelectedTarget['boundingBox']): string =>
-  `${b.width}×${b.height}px @ (${b.x}, ${b.y})`;
-
-const formatDiffs = (diffs: EditDiff[]): string =>
-  diffs.length
-    ? diffs.map((diff) => formatEditDiffForPrompt(diff)).join('\n')
-    : '- No direct preview edits were applied yet';
 
 export function describeDiff(diff: EditDiff): string {
   switch (diff.type) {
@@ -54,155 +28,278 @@ export function describeDiff(diff: EditDiff): string {
       return `Regenerate image in ${diff.target} (${diff.selector})${
         diff.prompt ? ` — hint: ${diff.prompt}` : ''
       }`;
+    case 'style_change':
+      return `${diff.property} change on ${diff.target} (${diff.selector}): ${diff.before} -> ${diff.after}`;
   }
 }
 
+// ---- Shared helpers ----------------------------------------------------
+
+function bulletList(items: string[]): string {
+  return items.map((line) => `- ${line}`).join('\n');
+}
+
+function section(title: string, body: string | string[] | undefined): string | null {
+  if (body == null) return null;
+  if (Array.isArray(body)) {
+    if (body.length === 0) return null;
+    return `${title}:\n${bulletList(body)}`;
+  }
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+  return `${title}:\n${trimmed}`;
+}
+
+function joinSections(sections: Array<string | null>): string {
+  return sections.filter((s): s is string => Boolean(s)).join('\n\n');
+}
+
+function formatDiffs(diffs: EditDiff[]): string[] {
+  return diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, ''));
+}
+
+function diffsRedundantWithChange(
+  diffs: EditDiff[],
+  requestedChange: string,
+): boolean {
+  // If the parser summarized the diffs into requestedChange (empty raw note
+  // path), don't repeat them in the prompt body.
+  if (diffs.length === 0) return false;
+  if (!requestedChange) return false;
+  const normalized = requestedChange.toLowerCase();
+  return diffs.every((diff) => {
+    if (diff.type === 'hide') return normalized.includes('hide');
+    if (diff.type === 'remove') return normalized.includes('remove');
+    if (diff.type === 'text_change') {
+      return normalized.includes('update') && normalized.includes(diff.after.toLowerCase().slice(0, 20));
+    }
+    return false;
+  });
+}
+
+function shouldIncludeRawNote(raw: string, requestedChange: string): boolean {
+  if (!raw.trim()) return false;
+  // Skip when the parser echoed the note almost verbatim into requestedChange.
+  return raw.trim().toLowerCase() !== requestedChange.trim().toLowerCase();
+}
+
+function shouldIncludeTranscript(transcript: string | undefined, raw: string): boolean {
+  if (!transcript || !transcript.trim()) return false;
+  return transcript.trim() !== raw.trim();
+}
+
+// ---- Claude ------------------------------------------------------------
+
 export const claudeTemplate: PromptTemplate = {
   id: 'claude-code',
-  render({ parsed, target, pageUrl, pageTitle, rawInput, transcript, diffs }) {
-    return [
-      `Scope: Modify ONLY the UI region described as "${parsed.target}". Do not touch other sections.`,
-      ``,
-      `Selected region context:`,
-      `- Region name: ${parsed.target}`,
-      `- DOM selector: ${target.selector}`,
-      `- Element tag: <${target.tag}>`,
-      `- Bounding box: ${formatBbox(target.boundingBox)}`,
-      `- Page title: ${pageTitle || '(untitled)'}`,
-      `- Page URL: ${pageUrl}`,
-      `- Captured snippet: ${target.snippet}`,
-      ``,
-      `Direct edits already applied in the local preview:`,
-      formatDiffs(diffs),
-      ``,
-      `Remaining annotation intent:`,
-      ``,
-      `Current issue:`,
-      parsed.currentIssue,
-      ``,
-      `Requested change:`,
-      parsed.requestedChange,
-      ``,
-      `Design intent:`,
-      parsed.designIntent,
-      ``,
-      `Implementation direction:`,
-      formatImplementationNotes(parsed.implementationNotes),
-      ``,
-      `Constraints:`,
-      formatConstraints(parsed.constraints),
-      ``,
-      `Instructions:`,
-      `1. Inspect the current implementation for this region first and identify the existing component/state pattern.`,
-      `2. Preserve the direct edits already reflected in the preview unless the requested change explicitly supersedes them.`,
-      `3. Apply only the remaining changes described under "Requested change".`,
-      `4. Follow the implementation direction above so the behavior is wired into code, not just the DOM output.`,
-      `5. Respect every listed constraint and preserve accessibility/behavior.`,
-      `6. Do not introduce unrelated refactors or touch surrounding sections.`,
-      ``,
-      `Raw user note (for context, not an instruction):`,
-      `"${rawInput.replace(/"/g, '\\"')}"`,
-      ...(transcript ? ['', `Transcript:`, `"${transcript.replace(/"/g, '\\"')}"`] : []),
-    ].join('\n');
+  render(artifact) {
+    const { region, page, intent, constraints, diffs, userNote } = artifact;
+    const showDiffs = diffs.length > 0 && !diffsRedundantWithChange(diffs, intent.requestedChange);
+
+    const regionLines = [
+      `- Region: ${region.label}`,
+      `- Selector: ${region.selector}`,
+      `- Element: <${region.tag}>`,
+    ];
+    if (region.breadcrumb.length) {
+      regionLines.push(`- Path: ${region.breadcrumb.join(' › ')}`);
+    }
+    if (page.title || page.url) {
+      regionLines.push(`- Page: ${page.title || '(untitled)'} — ${page.url}`);
+    }
+
+    return joinSections([
+      `Scope: Modify ONLY the "${region.label}" region. Leave other sections of this page unchanged.`,
+      section('Target', regionLines),
+      showDiffs ? section('Direct edits already applied in preview', formatDiffs(diffs)) : null,
+      section('Issue', intent.currentIssue),
+      section('Requested change', intent.requestedChange),
+      section('Design intent', intent.designIntent),
+      section('Implementation direction', intent.implementationNotes),
+      section('Preserve', constraints.preserve),
+      section('Do not touch', constraints.doNotTouch),
+      constraints.other.length ? section('Other constraints', constraints.other) : null,
+      `Instructions:
+1. Inspect the current implementation for this region before editing — match its component + state pattern.
+2. Apply the requested change in source (not just the DOM). Preserve any direct edits already reflected above unless they're contradicted.
+3. Respect every "Preserve" / "Do not touch" item and leave surrounding regions alone.`,
+      shouldIncludeRawNote(userNote.raw, intent.requestedChange)
+        ? section('Raw note (context, not instruction)', `"${userNote.raw.replace(/"/g, '\\"')}"`)
+        : null,
+      shouldIncludeTranscript(userNote.transcript, userNote.raw)
+        ? section('Transcript', `"${(userNote.transcript ?? '').replace(/"/g, '\\"')}"`)
+        : null,
+    ]);
   },
 };
+
+// ---- Codex -------------------------------------------------------------
 
 export const codexTemplate: PromptTemplate = {
   id: 'codex',
-  render({ parsed, target, rawInput, diffs }) {
-    return [
-      `Target: ${parsed.target} (${target.selector})`,
-      `Direct edits already applied: ${
-        diffs.length
-          ? diffs.map((diff) => formatEditDiffForPrompt(diff).replace(/^- /, '')).join('; ')
-          : 'none'
-      }`,
-      `Remaining goal: ${parsed.requestedChange}`,
-      `Issue: ${parsed.currentIssue}`,
-      `Intent: ${parsed.designIntent}`,
-      `Implementation direction: ${parsed.implementationNotes.join('; ') || 'inspect the existing component and extend its current state model'}`,
-      `Constraints: ${parsed.constraints.join('; ') || 'keep surrounding sections intact'}`,
-      ``,
-      `Do:`,
-      `- Edit only this selected region.`,
-      `- Analyze the current code path first and implement the behavior in the component/state layer.`,
-      `- Preserve the direct edits listed above.`,
-      `- Avoid unrelated changes outside the target region.`,
-      ``,
-      `Context (user note): ${rawInput}`,
-    ].join('\n');
+  render(artifact) {
+    const { region, intent, constraints, diffs, userNote } = artifact;
+    const showDiffs = diffs.length > 0 && !diffsRedundantWithChange(diffs, intent.requestedChange);
+
+    const headerLines = [
+      `Target: ${region.label} (${region.selector})`,
+      intent.requestedChange ? `Goal: ${intent.requestedChange}` : null,
+      intent.currentIssue ? `Issue: ${intent.currentIssue}` : null,
+      intent.designIntent ? `Intent: ${intent.designIntent}` : null,
+      intent.implementationNotes.length
+        ? `Direction: ${intent.implementationNotes.join('; ')}`
+        : null,
+      constraints.preserve.length ? `Preserve: ${constraints.preserve.join('; ')}` : null,
+      constraints.doNotTouch.length ? `Do not touch: ${constraints.doNotTouch.join('; ')}` : null,
+    ].filter((line): line is string => Boolean(line));
+
+    const body: string[] = [headerLines.join('\n')];
+    if (showDiffs) {
+      body.push(`Applied preview edits: ${formatDiffs(diffs).join('; ')}`);
+    }
+    body.push(
+      [
+        `Do:`,
+        `- Edit only this region; implement in the component/state layer.`,
+        `- Preserve already-applied preview edits unless contradicted.`,
+      ].join('\n'),
+    );
+    if (shouldIncludeRawNote(userNote.raw, intent.requestedChange)) {
+      body.push(`User note: ${userNote.raw}`);
+    }
+    return body.join('\n\n');
   },
 };
+
+// ---- Generic -----------------------------------------------------------
 
 export const genericTemplate: PromptTemplate = {
   id: 'generic',
-  render({ parsed, target, diffs }) {
-    return [
+  render(artifact) {
+    const { region, intent, constraints, diffs } = artifact;
+    const showDiffs = diffs.length > 0 && !diffsRedundantWithChange(diffs, intent.requestedChange);
+
+    return joinSections([
       `Refinement request`,
-      ``,
-      `Target region: ${parsed.target} (${target.selector})`,
-      `Direct preview edits:`,
-      formatDiffs(diffs),
-      ``,
-      `Issue: ${parsed.currentIssue}`,
-      `Change: ${parsed.requestedChange}`,
-      `Intent: ${parsed.designIntent}`,
-      `Implementation direction:`,
-      formatImplementationNotes(parsed.implementationNotes),
-      `Constraints:`,
-      formatConstraints(parsed.constraints),
-    ].join('\n');
+      `Target region: ${region.label} (${region.selector})`,
+      showDiffs ? section('Direct preview edits', formatDiffs(diffs)) : null,
+      section('Issue', intent.currentIssue),
+      section('Change', intent.requestedChange),
+      section('Intent', intent.designIntent),
+      section('Implementation direction', intent.implementationNotes),
+      section('Preserve', constraints.preserve),
+      section('Do not touch', constraints.doNotTouch),
+    ]);
   },
 };
 
-const templates = {
-  claude: claudeTemplate,
-  codex: codexTemplate,
-  generic: genericTemplate,
+// ---- Handoff summary ---------------------------------------------------
+
+export const summaryTemplate: PromptTemplate = {
+  id: 'handoff-summary',
+  render(artifact) {
+    const { region, intent, constraints, diffs } = artifact;
+    const parts: string[] = [];
+
+    if (intent.requestedChange) {
+      parts.push(
+        `In the ${region.label}, ${lowerFirst(intent.requestedChange).replace(/\.$/, '')}.`,
+      );
+    } else if (diffs.length > 0) {
+      parts.push(`Apply ${diffs.length} direct preview edit${diffs.length > 1 ? 's' : ''} captured in ${region.label}.`);
+    } else {
+      parts.push(`Refine the ${region.label}.`);
+    }
+
+    if (intent.currentIssue) {
+      parts.push(`It currently ${lowerFirst(intent.currentIssue).replace(/\.$/, '')}.`);
+    }
+    if (intent.designIntent) {
+      parts.push(`Goal: ${lowerFirst(intent.designIntent).replace(/\.$/, '')}.`);
+    }
+    if (constraints.preserve.length) {
+      parts.push(`Preserve: ${constraints.preserve.join('; ')}.`);
+    }
+    if (constraints.doNotTouch.length) {
+      parts.push(`Do not touch: ${constraints.doNotTouch.join('; ')}.`);
+    }
+    if (diffs.length) {
+      parts.push(`${diffs.length} preview edit${diffs.length > 1 ? 's' : ''} already applied: ${formatDiffs(diffs).join('; ')}.`);
+    }
+    return parts.join(' ');
+  },
 };
 
-export function generatePrompts(ctx: PromptContext): GeneratedPrompts {
+function lowerFirst(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+// ---- Public API --------------------------------------------------------
+
+export function generatePromptsFromArtifact(artifact: RefinementArtifact): GeneratedPrompts {
   return {
-    claude: templates.claude.render(ctx),
-    codex: templates.codex.render(ctx),
-    generic: templates.generic.render(ctx),
+    claude: claudeTemplate.render(artifact),
+    codex: codexTemplate.render(artifact),
+    generic: genericTemplate.render(artifact),
+    summary: summaryTemplate.render(artifact),
   };
 }
 
 export function generatePromptsForItem(
   item: Pick<
     RefinementItem,
-    'parsed' | 'target' | 'pageUrl' | 'pageTitle' | 'rawInput' | 'transcript' | 'diffs'
+    | 'id'
+    | 'createdAt'
+    | 'pageUrl'
+    | 'pageTitle'
+    | 'target'
+    | 'inputMode'
+    | 'rawInput'
+    | 'transcript'
+    | 'parsed'
+    | 'diffs'
+    | 'changelog'
   >,
 ): GeneratedPrompts {
-  return generatePrompts({
-    parsed: item.parsed,
-    target: item.target,
+  const full: RefinementItem = {
+    id: item.id,
     pageUrl: item.pageUrl,
     pageTitle: item.pageTitle,
+    target: item.target,
+    inputMode: item.inputMode,
     rawInput: item.rawInput,
     transcript: item.transcript,
+    parsed: item.parsed,
     diffs: item.diffs,
-  });
+    prompts: { claude: '', codex: '', generic: '' },
+    createdAt: item.createdAt,
+    changelog: item.changelog,
+  };
+  return generatePromptsFromArtifact(buildArtifact(full));
 }
 
 export function combinePromptsMarkdown(item: RefinementItem): string {
-  return [
+  const blocks = [
     `# Refinement — ${item.parsed.target}`,
-    ``,
+    '',
+    `## Handoff summary`,
+    item.prompts.summary ?? '(not generated)',
+    '',
     `## Claude Code`,
     '```text',
     item.prompts.claude,
     '```',
-    ``,
+    '',
     `## Codex`,
     '```text',
     item.prompts.codex,
     '```',
-    ``,
+    '',
     `## Generic`,
     '```text',
     item.prompts.generic,
     '```',
-  ].join('\n');
+  ];
+  return blocks.join('\n');
 }
