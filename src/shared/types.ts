@@ -72,11 +72,16 @@ export type RemoveDiff = EditDiffBase & {
   // Short snippet / label of what was removed. Survives the DOM node being
   // detached so downstream prompts can still reference it concretely.
   preview?: string;
+  // Captures the element's inline `style.display` at capture time so a
+  // revert-on-delete can restore it. Legacy records without this field fall
+  // back to clearing `style.display`.
+  originalDisplay?: string;
 };
 
 export type HideDiff = EditDiffBase & {
   type: 'hide';
   preview?: string;
+  originalDisplay?: string;
 };
 
 export type ReorderDiff = EditDiffBase & {
@@ -87,6 +92,23 @@ export type ReorderDiff = EditDiffBase & {
   // prompt output a pointable "X moved up past Y" rather than just two lists.
   movedLabel?: string;
   direction?: 'up' | 'down';
+};
+
+// Cross-parent drag-to-move. Distinct from reorder, which only swaps with a
+// direct sibling in the same parent. movedLabel describes the dragged block;
+// fromSiblings / toSiblings snapshot both parents' child lists before / after.
+// toBeforeSelector is the sibling the block was inserted before (null = end).
+export type MoveDiff = EditDiffBase & {
+  type: 'move';
+  movedLabel: string;
+  fromParentSelector: string;
+  fromParentLabel: string;
+  fromSiblings: string[];
+  toParentSelector: string;
+  toParentLabel: string;
+  toSiblings: string[];
+  toBeforeSelector: string | null;
+  toBeforeLabel: string | null;
 };
 
 // Image intents are captured-only — they don't mutate the live DOM. They tell
@@ -141,6 +163,7 @@ export type EditDiff =
   | RemoveDiff
   | HideDiff
   | ReorderDiff
+  | MoveDiff
   | ImageReplaceIntentDiff
   | ImageRegenerateIntentDiff
   | StyleChangeDiff;
@@ -213,6 +236,8 @@ export type DirectEditAction =
   | { type: 'hide_selected' }
   | { type: 'remove_selected' }
   | { type: 'reorder_selected'; direction: 'up' | 'down' }
+  | { type: 'start_move' }
+  | { type: 'cancel_move' }
   | {
       type: 'attach_image_reference';
       referenceKind: ImageReferenceKind;

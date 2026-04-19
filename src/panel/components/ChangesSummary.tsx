@@ -10,6 +10,7 @@ const EMOJI: Record<string, string> = {
   hide: '🙈',
   remove: '🗑️',
   reorder: '↕',
+  move: '⇄',
   image_replace_intent: '🖼️',
   image_regenerate_intent: '✨',
   style_change: '📐',
@@ -36,6 +37,7 @@ export function ChangesSummary({ diffs }: Props) {
   if (counts.text) chips.push(`${counts.text} text`);
   if (counts.visibility) chips.push(`${counts.visibility} hide/remove`);
   if (counts.reorder) chips.push(`${counts.reorder} reorder`);
+  if (counts.move) chips.push(`${counts.move} move`);
   if (counts.image) chips.push(`${counts.image} image`);
   if (counts.style) chips.push(`${counts.style} style`);
 

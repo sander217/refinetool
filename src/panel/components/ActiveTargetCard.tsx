@@ -21,6 +21,7 @@ type Props = {
   onRenameLabel: (label: string) => void;
   onDiscard: () => void;
   inlineTextEditing: boolean;
+  moveActive: boolean;
   isApplyingEdit: boolean;
   editError: string;
   onStartInlineTextEdit: () => void;
@@ -28,6 +29,8 @@ type Props = {
   onHideSelected: () => void;
   onRemoveSelected: () => void;
   onReorderSelected: (direction: 'up' | 'down') => void;
+  onStartMove: () => void;
+  onCancelMove: () => void;
   onAttachImageReference: (payload: AttachImagePayload) => void;
   onMarkImageRegenerate: (prompt?: string) => void;
   onClearImageIntent: () => void;
@@ -44,6 +47,7 @@ export function ActiveTargetCard({
   onRenameLabel,
   onDiscard,
   inlineTextEditing,
+  moveActive,
   isApplyingEdit,
   editError,
   onStartInlineTextEdit,
@@ -51,6 +55,8 @@ export function ActiveTargetCard({
   onHideSelected,
   onRemoveSelected,
   onReorderSelected,
+  onStartMove,
+  onCancelMove,
   onAttachImageReference,
   onMarkImageRegenerate,
   onClearImageIntent,
@@ -129,6 +135,13 @@ export function ActiveTargetCard({
             Move down
           </button>
           <button
+            className={moveActive ? 'ifl-button' : 'ifl-button-ghost'}
+            disabled={isApplyingEdit || blockedByVisibility}
+            onClick={moveActive ? onCancelMove : onStartMove}
+          >
+            {moveActive ? 'Cancel drag' : 'Drag to move'}
+          </button>
+          <button
             className="ifl-button-ghost"
             disabled={isApplyingEdit}
             onClick={onHideSelected}
@@ -145,6 +158,9 @@ export function ActiveTargetCard({
         </div>
         <p className="ifl-subtle ifl-subtle-small">
           Direct edits change the local preview only and are captured as structured diffs.
+          {moveActive
+            ? ' Drag mode is active — grab the highlighted block on the page and drop it into a new position. Press ESC to cancel.'
+            : null}
         </p>
         {editError ? <p className="ifl-error">{editError}</p> : null}
       </div>

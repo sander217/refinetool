@@ -103,6 +103,26 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
     return true;
   }
 
+  if (msg.type === 'REVERT_DIFFS') {
+    void getActiveTabId().then(async (tabId) => {
+      if (tabId == null) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+      try {
+        await ensureContentScript(tabId);
+        const result = (await chrome.tabs.sendMessage(tabId, msg)) as
+          | { ok?: boolean; error?: string }
+          | undefined;
+        sendResponse(result ?? { ok: true });
+      } catch (err) {
+        console.warn('[IFL] REVERT_DIFFS failed', err);
+        sendResponse({ ok: false, error: 'Unable to reach the page content script.' });
+      }
+    });
+    return true;
+  }
+
   if (msg.type === 'APPLY_DIRECT_EDIT') {
     void getActiveTabId().then(async (tabId) => {
       if (tabId == null) {

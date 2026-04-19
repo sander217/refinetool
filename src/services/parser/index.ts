@@ -204,6 +204,9 @@ function summarizeDiffsAsIssue(diffs: EditDiff[], label: string): string {
     if (diff.type === 'text_change') {
       return `${diff.target} copy was changed in the preview, but the source implementation still uses the previous text.`;
     }
+    if (diff.type === 'move') {
+      return `${diff.target} was dragged into a different parent in the preview, but the shipped layout still renders it in its original position.`;
+    }
     return `${diff.target} was reordered in the preview, but the shipped implementation does not match that structure yet.`;
   }
 
@@ -217,6 +220,12 @@ function summarizeDiffsAsRequestedChange(diffs: EditDiff[]): string {
       if (diff.type === 'remove') return `Remove ${diff.target}.`;
       if (diff.type === 'text_change') {
         return `Update ${diff.target} text from "${diff.before}" to "${diff.after}".`;
+      }
+      if (diff.type === 'move') {
+        const dest = diff.toBeforeLabel
+          ? `before ${diff.toBeforeLabel}`
+          : 'at the end';
+        return `Move ${diff.target} into ${diff.toParentLabel} (${dest}).`;
       }
       return `Reorder ${diff.target} to match the preview order.`;
     })

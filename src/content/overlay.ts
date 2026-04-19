@@ -1,5 +1,18 @@
 export type SelectionState = 'locked' | 'editing' | 'edited';
 
+// Drop-indicator orientation: 'horizontal' paints a thin line spanning the
+// parent's width (used inside vertical flow layouts); 'vertical' paints a
+// line spanning its height (used in flex-row / horizontal layouts).
+export type DropOrientation = 'horizontal' | 'vertical';
+
+export type DropIndicatorRect = {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+  orientation: DropOrientation;
+};
+
 export type OverlayHandles = {
   showHover: (rect: DOMRect, label?: string) => void;
   hideHover: () => void;
@@ -7,6 +20,10 @@ export type OverlayHandles = {
   hideSelection: () => void;
   showBanner: (text?: string) => void;
   hideBanner: () => void;
+  showDropIndicator: (rect: DropIndicatorRect, label?: string) => void;
+  hideDropIndicator: () => void;
+  showDropContainer: (rect: DOMRect) => void;
+  hideDropContainer: () => void;
   teardown: () => void;
 };
 
@@ -17,6 +34,9 @@ export const OVERLAY_IDS = {
   styles: 'ifl-overlay-styles',
   inlineEditable: 'ifl-inline-editable',
   inlineEditing: 'ifl-inline-editing',
+  dropLine: 'ifl-drop-line',
+  dropContainer: 'ifl-drop-container',
+  moveDragging: 'ifl-move-dragging',
 } as const;
 
 export function createOverlay(): OverlayHandles {
@@ -38,7 +58,16 @@ export function createOverlay(): OverlayHandles {
   banner.style.display = 'none';
   banner.textContent = 'Refine Mode — click regions to select or retarget · ESC to exit';
 
-  document.documentElement.append(hover, selection, banner);
+  const dropLine = spawn('div', OVERLAY_IDS.dropLine);
+  dropLine.style.display = 'none';
+  const dropLineLabel = document.createElement('span');
+  dropLineLabel.className = 'ifl-label ifl-label-drop';
+  dropLine.appendChild(dropLineLabel);
+
+  const dropContainer = spawn('div', OVERLAY_IDS.dropContainer);
+  dropContainer.style.display = 'none';
+
+  document.documentElement.append(hover, selection, banner, dropContainer, dropLine);
 
   return {
     showHover(rect, label) {
@@ -72,10 +101,39 @@ export function createOverlay(): OverlayHandles {
     hideBanner() {
       banner.style.display = 'none';
     },
+    showDropIndicator(rect, label) {
+      dropLine.dataset.orientation = rect.orientation;
+      dropLine.style.top = `${rect.top}px`;
+      dropLine.style.left = `${rect.left}px`;
+      dropLine.style.width = `${rect.width}px`;
+      dropLine.style.height = `${rect.height}px`;
+      if (label) {
+        dropLineLabel.textContent = label;
+        dropLineLabel.style.display = 'inline-block';
+      } else {
+        dropLineLabel.style.display = 'none';
+      }
+      dropLine.style.display = 'block';
+    },
+    hideDropIndicator() {
+      dropLine.style.display = 'none';
+    },
+    showDropContainer(rect) {
+      dropContainer.style.top = `${rect.top}px`;
+      dropContainer.style.left = `${rect.left}px`;
+      dropContainer.style.width = `${rect.width}px`;
+      dropContainer.style.height = `${rect.height}px`;
+      dropContainer.style.display = 'block';
+    },
+    hideDropContainer() {
+      dropContainer.style.display = 'none';
+    },
     teardown() {
       hover.remove();
       selection.remove();
       banner.remove();
+      dropLine.remove();
+      dropContainer.remove();
       const style = document.getElementById(OVERLAY_IDS.styles);
       style?.remove();
     },
@@ -185,6 +243,49 @@ function ensureStyles() {
       pointer-events: auto !important;
       -webkit-user-select: text !important;
       user-select: text !important;
+    }
+    html.ifl-move-mode, html.ifl-move-mode * { cursor: grab !important; }
+    html.ifl-move-dragging, html.ifl-move-dragging * { cursor: grabbing !important; }
+    html.ifl-move-mode .${OVERLAY_IDS.moveDragging},
+    html.ifl-move-dragging .${OVERLAY_IDS.moveDragging} {
+      opacity: 0.55;
+      outline: 2px dashed rgba(236, 72, 153, 0.9);
+      outline-offset: 2px;
+    }
+    #${OVERLAY_IDS.dropContainer} {
+      position: fixed;
+      pointer-events: none;
+      z-index: 2147483645;
+      box-sizing: border-box;
+      border: 2px dashed rgba(236, 72, 153, 0.75);
+      background: rgba(236, 72, 153, 0.06);
+      border-radius: 6px;
+      transition: top 40ms linear, left 40ms linear, width 40ms linear, height 40ms linear;
+    }
+    #${OVERLAY_IDS.dropLine} {
+      position: fixed;
+      pointer-events: none;
+      z-index: 2147483647;
+      box-sizing: border-box;
+      background: rgba(236, 72, 153, 0.95);
+      box-shadow: 0 0 0 3px rgba(236, 72, 153, 0.25);
+      border-radius: 2px;
+    }
+    #${OVERLAY_IDS.dropLine}[data-orientation="horizontal"] { min-height: 3px; }
+    #${OVERLAY_IDS.dropLine}[data-orientation="vertical"] { min-width: 3px; }
+    #${OVERLAY_IDS.dropLine} .ifl-label-drop {
+      position: absolute;
+      top: -26px;
+      left: 0;
+      background: rgba(157, 23, 77, 0.95);
+      color: #fff;
+      font: 500 12px/1.2 system-ui, -apple-system, 'Segoe UI', sans-serif;
+      padding: 4px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   `;
   document.head.appendChild(style);

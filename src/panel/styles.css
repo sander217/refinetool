@@ -296,6 +296,33 @@ code {
   background: rgba(239, 68, 68, 0.08);
 }
 
+.ifl-icon-button {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ifl-icon-button:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: var(--text);
+}
+.ifl-icon-button-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
 .ifl-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .ifl-row-end { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .ifl-row-between {
