@@ -22,6 +22,12 @@ export function describeDiff(diff: EditDiff): string {
       return `Remove ${diff.target} (${diff.selector})`;
     case 'reorder':
       return `Reorder ${diff.target} (${diff.selector}): [${diff.before.join(' | ')}] -> [${diff.after.join(' | ')}]`;
+    case 'move': {
+      const dest = diff.toBeforeLabel
+        ? `before ${diff.toBeforeLabel}`
+        : 'at end';
+      return `Move ${diff.target} (${diff.selector}) from ${diff.fromParentLabel} (${diff.fromParentSelector}) -> ${diff.toParentLabel} (${diff.toParentSelector}), ${dest}`;
+    }
     case 'image_replace_intent':
       return `Replace image in ${diff.target} (${diff.selector}) — ${describeImageReference(diff)}`;
     case 'image_regenerate_intent':

@@ -3,6 +3,7 @@ import {
   describeEditDiff,
   describeImageReference,
   diffTypeLabel,
+  formatMoveSummary,
   formatReorderSummary,
 } from '../../shared/editDiffs';
 import type { EditDiff, ImageReferenceKind } from '../../shared/types';
@@ -75,6 +76,9 @@ export function EditDiffList({
 function DiffSummary({ diff }: { diff: EditDiff }) {
   if (diff.type === 'reorder') {
     return <pre className="ifl-pre">{formatReorderSummary(diff)}</pre>;
+  }
+  if (diff.type === 'move') {
+    return <pre className="ifl-pre">{formatMoveSummary(diff)}</pre>;
   }
   if (diff.type === 'image_replace_intent') {
     return (

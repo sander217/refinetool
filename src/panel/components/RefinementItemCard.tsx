@@ -59,7 +59,20 @@ export function RefinementItemCard({
             {new Date(item.createdAt).toLocaleString()} · {item.inputMode}
           </div>
         </div>
-        <span className="ifl-chevron">{expanded ? '▾' : '▸'}</span>
+        <div className="ifl-row-end">
+          <button
+            className="ifl-icon-button ifl-icon-button-danger"
+            title="Delete and revert preview"
+            aria-label="Delete"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+          >
+            ×
+          </button>
+          <span className="ifl-chevron">{expanded ? '▾' : '▸'}</span>
+        </div>
       </header>
 
       {expanded && (

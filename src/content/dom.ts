@@ -126,7 +126,7 @@ export function pickStableTarget(
   return pickMeaningfulTarget(raw);
 }
 
-function isBlockCandidate(el: Element): boolean {
+export function isBlockCandidate(el: Element): boolean {
   if (!isSelectableCandidate(el)) return false;
   const rect = el.getBoundingClientRect();
   if (rect.width < BLOCK_MIN_WIDTH || rect.height < BLOCK_MIN_HEIGHT) return false;

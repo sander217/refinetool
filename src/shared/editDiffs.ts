@@ -2,6 +2,7 @@ import type {
   EditDiff,
   ImageRegenerateIntentDiff,
   ImageReplaceIntentDiff,
+  MoveDiff,
   ReorderDiff,
   StyleProperty,
 } from './types';
@@ -23,6 +24,9 @@ export function describeEditDiff(diff: EditDiff): string {
       return `${diff.target}: moved ${diff.direction} within parent`;
     }
     return `${diff.target}: reordered within parent`;
+  }
+  if (diff.type === 'move') {
+    return `${diff.target}: moved ${describeMoveDestination(diff)}`;
   }
   if (diff.type === 'hide' || diff.type === 'remove') {
     const action = diff.type === 'hide' ? 'hidden' : 'removed';
@@ -46,6 +50,7 @@ export function diffTypeLabel(diff: EditDiff): string {
   if (diff.type === 'remove') return 'Remove';
   if (diff.type === 'hide') return 'Hide';
   if (diff.type === 'reorder') return 'Reorder';
+  if (diff.type === 'move') return 'Move';
   if (diff.type === 'image_replace_intent') return 'Replace image';
   if (diff.type === 'image_regenerate_intent') return 'Regenerate image';
   return STYLE_PROPERTY_LABELS[diff.property];
@@ -71,6 +76,7 @@ export type DiffCountBreakdown = {
   text: number;
   visibility: number;
   reorder: number;
+  move: number;
   image: number;
   style: number;
 };
@@ -81,6 +87,7 @@ export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
     text: 0,
     visibility: 0,
     reorder: 0,
+    move: 0,
     image: 0,
     style: 0,
   };
@@ -88,6 +95,7 @@ export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
     if (diff.type === 'text_change') counts.text += 1;
     else if (diff.type === 'hide' || diff.type === 'remove') counts.visibility += 1;
     else if (diff.type === 'reorder') counts.reorder += 1;
+    else if (diff.type === 'move') counts.move += 1;
     else if (diff.type === 'style_change') counts.style += 1;
     else counts.image += 1;
   }
@@ -105,6 +113,24 @@ export function formatEditDiffForPrompt(diff: EditDiff): string {
     }
     lines.push(`  Before: ${formatOrder(diff.before)}`);
     lines.push(`  After: ${formatOrder(diff.after)}`);
+    return lines.join('\n');
+  }
+  if (diff.type === 'move') {
+    const lines = [`- Move ${diff.target}:`];
+    lines.push(`  Moved: ${diff.movedLabel}`);
+    lines.push(`  From parent: ${diff.fromParentLabel} (${diff.fromParentSelector})`);
+    lines.push(`  To parent: ${diff.toParentLabel} (${diff.toParentSelector})`);
+    lines.push(
+      diff.toBeforeLabel
+        ? `  Inserted before: ${diff.toBeforeLabel} (${diff.toBeforeSelector})`
+        : `  Inserted: at end of parent`,
+    );
+    if (diff.fromSiblings.length) {
+      lines.push(`  From siblings: ${formatOrder(diff.fromSiblings)}`);
+    }
+    if (diff.toSiblings.length) {
+      lines.push(`  To siblings: ${formatOrder(diff.toSiblings)}`);
+    }
     return lines.join('\n');
   }
   if (diff.type === 'hide' || diff.type === 'remove') {
@@ -130,6 +156,37 @@ export function formatEditDiffForPrompt(diff: EditDiff): string {
 
 export function formatReorderSummary(diff: ReorderDiff): string {
   return `Before: ${formatOrder(diff.before)}\nAfter: ${formatOrder(diff.after)}`;
+}
+
+export function formatMoveSummary(diff: MoveDiff): string {
+  const lines: string[] = [];
+  lines.push(`Moved: ${diff.movedLabel}`);
+  lines.push(`From: ${diff.fromParentLabel || '(unknown parent)'}`);
+  if (diff.fromSiblings.length) {
+    lines.push(`  siblings: ${formatOrder(diff.fromSiblings)}`);
+  }
+  lines.push(`To: ${diff.toParentLabel || '(unknown parent)'}`);
+  lines.push(
+    diff.toBeforeLabel
+      ? `  inserted before: ${diff.toBeforeLabel}`
+      : `  inserted at end`,
+  );
+  if (diff.toSiblings.length) {
+    lines.push(`  siblings now: ${formatOrder(diff.toSiblings)}`);
+  }
+  return lines.join('\n');
+}
+
+export function describeMoveDestination(diff: MoveDiff): string {
+  if (diff.fromParentSelector === diff.toParentSelector) {
+    return diff.toBeforeLabel
+      ? `within ${diff.toParentLabel} — before ${diff.toBeforeLabel}`
+      : `within ${diff.toParentLabel} — to the end`;
+  }
+  if (diff.toBeforeLabel) {
+    return `into ${diff.toParentLabel} — before ${diff.toBeforeLabel}`;
+  }
+  return `into ${diff.toParentLabel} — at end`;
 }
 
 export function describeImageReference(diff: ImageReplaceIntentDiff): string {

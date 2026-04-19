@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExtensionMessage, RefineModeResponse } from '../shared/messages';
-import type { DirectEditAction, PendingSelection, RefinementItem } from '../shared/types';
+import type {
+  DirectEditAction,
+  EditDiff,
+  PendingSelection,
+  RefinementItem,
+} from '../shared/types';
 import { STORAGE_KEYS } from '../shared/types';
 import {
   addItem,
@@ -33,8 +38,22 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isApplyingEdit, setIsApplyingEdit] = useState(false);
   const [inlineTextEditing, setInlineTextEditing] = useState(false);
+  const [moveActive, setMoveActive] = useState(false);
   const [editError, setEditError] = useState('');
   const [pendingLabel, setPendingLabel] = useState('');
+  // Tracks which pending.capturedAt values have already been auto-saved, so
+  // rapid storage updates don't spawn duplicate session items for the same
+  // selection.
+  const autoSavedKeys = useRef<Set<string>>(new Set());
+  // Keep a ref to the latest draft so the auto-save path (which runs from a
+  // storage listener closure) sees the user's typed note without needing to
+  // be re-bound on every keystroke.
+  const draftInputRef = useRef(draftInput);
+  const draftInputModeRef = useRef(draftInputMode);
+  useEffect(() => {
+    draftInputRef.current = draftInput;
+    draftInputModeRef.current = draftInputMode;
+  }, [draftInput, draftInputMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,10 +71,59 @@ export default function App() {
     };
   }, []);
 
+  const autoSavePending = useCallback(async (outgoing: PendingSelection) => {
+    if (outgoing.diffs.length === 0) return;
+    if (autoSavedKeys.current.has(outgoing.capturedAt)) return;
+    autoSavedKeys.current.add(outgoing.capturedAt);
+
+    const rawInput = draftInputRef.current;
+    const inputMode = draftInputModeRef.current;
+    try {
+      const parsed = await refinementParser.parse({
+        rawInput,
+        target: outgoing.target,
+        diffs: outgoing.diffs,
+      });
+      const createdAt = nowIso();
+      const item: RefinementItem = {
+        id: uid(),
+        pageUrl: outgoing.pageUrl,
+        pageTitle: outgoing.pageTitle,
+        target: outgoing.target,
+        inputMode,
+        rawInput,
+        parsed,
+        diffs: outgoing.diffs,
+        prompts: { claude: '', codex: '', generic: '' },
+        createdAt,
+        changelog: [
+          {
+            at: createdAt,
+            kind: 'created',
+            note: `Auto-saved ${outgoing.diffs.length} direct edit${
+              outgoing.diffs.length === 1 ? '' : 's'
+            }.`,
+          },
+        ],
+      };
+      item.prompts = generatePromptsForItem(item);
+      const next = await addItem(item);
+      setItemsState(next);
+    } catch (err) {
+      console.warn('[IFL] auto-save failed', err);
+      autoSavedKeys.current.delete(outgoing.capturedAt);
+    }
+  }, []);
+
   useEffect(() => {
     return subscribeToStorage((changes) => {
       if (STORAGE_KEYS.pending in changes) {
+        const prev = changes[STORAGE_KEYS.pending].oldValue as PendingSelection | undefined;
         const next = changes[STORAGE_KEYS.pending].newValue as PendingSelection | undefined;
+        const isSwap = !next || (prev && next.capturedAt !== prev.capturedAt);
+        if (prev && isSwap) {
+          void autoSavePending(prev);
+        }
         setPending(next ?? null);
         if (next) {
           setPendingLabel(next.target.label);
@@ -69,7 +137,7 @@ export default function App() {
         setItemsState(next ?? []);
       }
     });
-  }, []);
+  }, [autoSavePending]);
 
   useEffect(() => {
     if (!pending) return;
@@ -85,6 +153,9 @@ export default function App() {
       }
       if (msg.type === 'INLINE_TEXT_STATE_CHANGED') {
         setInlineTextEditing(msg.active);
+      }
+      if (msg.type === 'MOVE_MODE_CHANGED') {
+        setMoveActive(msg.active);
       }
     };
     chrome.runtime.onMessage.addListener(listener);
@@ -125,6 +196,12 @@ export default function App() {
       if (action.type === 'stop_inline_text_edit' || action.type === 'reset_pending_selection') {
         setInlineTextEditing(false);
       }
+      if (action.type === 'start_move') {
+        setMoveActive(true);
+      }
+      if (action.type === 'cancel_move' || action.type === 'reset_pending_selection') {
+        setMoveActive(false);
+      }
       return true;
     } catch (err) {
       console.warn('[IFL] direct edit failed', err);
@@ -135,14 +212,35 @@ export default function App() {
     }
   }, []);
 
+  const revertDiffsOnPreview = useCallback(async (diffs: EditDiff[]) => {
+    if (diffs.length === 0) return;
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'REVERT_DIFFS',
+        diffs,
+      } satisfies ExtensionMessage);
+    } catch (err) {
+      console.warn('[IFL] revert diffs failed', err);
+    }
+  }, []);
+
   const handleDiscardPending = useCallback(async () => {
-    await runDirectEditAction({ type: 'reset_pending_selection', revert: true });
+    // Discard button skips the auto-save path: block auto-save first, then
+    // revert the captured diffs directly on the preview. We pass revert=false
+    // to the content-script reset because REVERT_DIFFS already handled the
+    // rollback — the per-pending originals snapshot would just be redundant.
+    if (pending) {
+      autoSavedKeys.current.add(pending.capturedAt);
+      await revertDiffsOnPreview(pending.diffs);
+    }
+    await runDirectEditAction({ type: 'reset_pending_selection', revert: false });
     await clearPendingSelection();
     setPending(null);
     setDraftInput('');
     setPendingLabel('');
     setInlineTextEditing(false);
-  }, [runDirectEditAction]);
+    setMoveActive(false);
+  }, [pending, revertDiffsOnPreview, runDirectEditAction]);
 
   const handleRenamePendingLabel = useCallback(
     (label: string) => {
@@ -161,6 +259,9 @@ export default function App() {
   const handleSave = useCallback(
     async (opts: { inputMode: 'text' | 'voice'; rawInput: string; transcript?: string }) => {
       if (!pending) return;
+      // Block the storage-listener auto-save from also firing on this same
+      // pending — manual Save owns the item creation here.
+      autoSavedKeys.current.add(pending.capturedAt);
       setIsSaving(true);
       try {
         const effectiveTarget = {
@@ -204,6 +305,7 @@ export default function App() {
         setPendingLabel('');
         setDraftInput('');
         setInlineTextEditing(false);
+        setMoveActive(false);
       } finally {
         setIsSaving(false);
       }
@@ -277,10 +379,17 @@ export default function App() {
     [items],
   );
 
-  const handleDelete = useCallback(async (id: string) => {
-    const next = await deleteItem(id);
-    setItemsState(next);
-  }, []);
+  const handleDelete = useCallback(
+    async (id: string) => {
+      const current = items.find((entry) => entry.id === id);
+      if (current) {
+        await revertDiffsOnPreview(current.diffs);
+      }
+      const next = await deleteItem(id);
+      setItemsState(next);
+    },
+    [items, revertDiffsOnPreview],
+  );
 
   const handleClearAll = useCallback(async () => {
     if (!confirm('Clear all refinement items in this session?')) return;
@@ -304,6 +413,7 @@ export default function App() {
               onRenameLabel={handleRenamePendingLabel}
               onDiscard={handleDiscardPending}
               inlineTextEditing={inlineTextEditing}
+              moveActive={moveActive}
               isApplyingEdit={isApplyingEdit}
               editError={editError}
               onStartInlineTextEdit={() => void runDirectEditAction({ type: 'start_inline_text_edit' })}
@@ -313,6 +423,8 @@ export default function App() {
               onReorderSelected={(direction) =>
                 void runDirectEditAction({ type: 'reorder_selected', direction })
               }
+              onStartMove={() => void runDirectEditAction({ type: 'start_move' })}
+              onCancelMove={() => void runDirectEditAction({ type: 'cancel_move' })}
               onAttachImageReference={(payload) =>
                 void runDirectEditAction({ type: 'attach_image_reference', ...payload })
               }

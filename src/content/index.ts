@@ -10,6 +10,7 @@ import {
   generateSelector,
   getEditableTextElements,
   getElementTextValue,
+  isBlockCandidate,
   labelTarget,
   pickMeaningfulTarget,
   pickStableTarget,
@@ -19,7 +20,12 @@ import {
   walkToSiblingBlock,
 } from './dom';
 import { STORAGE_KEYS } from '../shared/types';
-import { createOverlay, OVERLAY_IDS, type OverlayHandles } from './overlay';
+import {
+  createOverlay,
+  OVERLAY_IDS,
+  type DropIndicatorRect,
+  type OverlayHandles,
+} from './overlay';
 
 const globalState = globalThis as typeof globalThis & {
   __iflContentScriptInitialized__?: boolean;
@@ -69,6 +75,12 @@ if (!globalState.__iflContentScriptInitialized__) {
   let originalNextSibling: ChildNode | null = null;
   let originalDisplay = '';
   let refreshFrame = 0;
+
+  // Drag-to-move state. moveMode = panel opted into move; moveDragging = the
+  // user is actively holding a pointerdown between grab and release.
+  let moveMode = false;
+  let moveDragging = false;
+  let moveDropAnchor: { parent: Element; beforeChild: Element | null } | null = null;
 
   const POSITION_STEP = 4;
   const FONT_SIZE_STEP = 1;
@@ -378,6 +390,14 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onPointerMove(event: PointerEvent) {
   if (!refineEnabled || !overlay) return;
+  if (moveMode) {
+    if (currentHover) {
+      overlay.hideHover();
+      currentHover = null;
+    }
+    setPickingClass(false);
+    return;
+  }
   if (!isPickingModifier(event)) {
     // Modifier not held — hide any lingering hover so the page feels normal.
     if (currentHover) {
@@ -414,6 +434,9 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onClickCapture(event: MouseEvent) {
   if (!refineEnabled) return;
+  // Move-mode owns pointer handling — click events during a drag are
+  // swallowed by its own capture-phase listeners.
+  if (moveMode) return;
 
   // While editing, a plain click outside the locked region exits edit mode
   // and lets the click proceed naturally (so the user can interact with
@@ -470,7 +493,7 @@ if (!globalState.__iflContentScriptInitialized__) {
       ?? pickNewlyVisibleReveal(floatersBefore, picked);
     if (reveal) {
       pinElement(reveal);
-      selectRegion(reveal, { revertPreviousPending: true, disableRefineMode: false });
+      selectRegion(reveal, { revertPreviousPending: false, disableRefineMode: false });
       const leaf = firstTextLeafWithin(reveal);
       if (leaf) autoEnterInlineTextEdit(leaf);
       return;
@@ -480,7 +503,7 @@ if (!globalState.__iflContentScriptInitialized__) {
     const stayInSameRegion =
       !!(textLeaf && selectedElement && selectedElement.contains(textLeaf));
     if (!stayInSameRegion) {
-      selectRegion(picked, { revertPreviousPending: true, disableRefineMode: false });
+      selectRegion(picked, { revertPreviousPending: false, disableRefineMode: false });
     }
     if (textLeaf) {
       autoEnterInlineTextEdit(textLeaf);
@@ -526,6 +549,9 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function onKeyDown(event: KeyboardEvent) {
   if (!refineEnabled) return;
+  // Move-mode owns ESC — its own key handler cancels the drag without
+  // exiting refine mode. Other keys fall through normally.
+  if (moveMode && event.key === 'Escape') return;
 
   if (event.key === 'Meta' || event.key === 'Control') {
     setPickingClass(true);
@@ -533,14 +559,20 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
 
   if (event.key === 'Escape') {
+    // Esc deselects the active region but leaves refine mode on. Preview
+    // edits stay applied — the panel auto-saves the outgoing pending to
+    // the session (revert will come from Delete on the session card).
+    if (!activePending) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    setRefineEnabled(false);
-    chrome.runtime
-      .sendMessage({ type: 'SET_REFINE_MODE', enabled: false } satisfies ExtensionMessage)
-      .catch(() => {});
+    resetSessionState({ revertPreview: false });
+    chrome.storage.local.remove(STORAGE_KEYS.pending).catch(() => {});
     return;
   }
+
+  // While dragging, swallow arrow-key cycling so the user doesn't
+  // accidentally re-target mid-drag.
+  if (moveMode) return;
 
   if (!activePending || !selectionVisible) return;
 
@@ -619,6 +651,7 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function setRefineEnabled(enabled: boolean, opts: { keepSelection?: boolean } = {}) {
   if (refineEnabled === enabled) return;
+  if (!enabled && moveMode) endMoveMode({ reason: 'cancel' });
   refineEnabled = enabled;
   if (enabled) {
     overlay = overlay ?? createOverlay();
@@ -739,6 +772,14 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   if (action.type === 'reorder_selected') {
     return reorderSelectedElement(element, action.direction);
+  }
+
+  if (action.type === 'start_move') {
+    return startMoveMode(element);
+  }
+
+  if (action.type === 'cancel_move') {
+    return cancelMoveMode();
   }
 
   if (action.type === 'attach_image_reference') {
@@ -1127,6 +1168,10 @@ if (!globalState.__iflContentScriptInitialized__) {
   // Snapshot a short preview of the element before we hide it — this is the
   // only handle downstream prompts will have for "what was this?".
   const preview = shortPreviewOf(htmlElement);
+  // Capture the original inline display so revert-on-delete (run after the
+  // item is saved to session) can restore the prior state without needing
+  // the per-pending originals map.
+  const originalDisplay = htmlElement.style.display;
   htmlElement.style.display = 'none';
   selectionVisible = false;
   overlay?.hideSelection();
@@ -1149,6 +1194,7 @@ if (!globalState.__iflContentScriptInitialized__) {
       selector: activePending?.target.selector ?? generateSelector(element),
       target: targetLabel,
       preview,
+      originalDisplay,
       createdAt: existing?.createdAt ?? nowIso(),
     });
     return next;
@@ -1396,6 +1442,401 @@ if (!globalState.__iflContentScriptInitialized__) {
   refreshSelectionOverlay();
   }
 
+  // --- Drag-to-move ------------------------------------------------------
+  // Move mode lives on top of an existing pending selection. The panel
+  // triggers `start_move`; the content script then takes over pointer
+  // routing at capture phase, draws a drop indicator between children of
+  // the nearest block candidate under the cursor, and records a single
+  // 'move' diff per pending selection on drop. Revert is handled by the
+  // selection-time `originalParent` / `originalNextSibling` snapshot in
+  // `resetSessionState` — we do not need a per-drag undo stack here.
+
+  function startMoveMode(element: Element): { ok: true; pending: typeof activePending } | { ok: false; error: string } {
+    if (moveMode) return { ok: true, pending: activePending };
+    if (!(element instanceof HTMLElement)) {
+      return { ok: false, error: 'Cannot drag this region.' };
+    }
+    moveMode = true;
+    moveDragging = false;
+    moveDropAnchor = null;
+    element.classList.add(OVERLAY_IDS.moveDragging);
+    document.documentElement.classList.add('ifl-move-mode');
+
+    window.addEventListener('pointerdown', onMovePointerDown, true);
+    window.addEventListener('pointermove', onMovePointerMove, true);
+    window.addEventListener('pointerup', onMovePointerUp, true);
+    window.addEventListener('keydown', onMoveKeyDown, true);
+    window.addEventListener('click', onMoveClickSwallow, true);
+
+    overlay?.showBanner('Drag the highlighted block to a new location · ESC to cancel');
+    notifyMoveModeChanged(true);
+    return { ok: true, pending: activePending };
+  }
+
+  function cancelMoveMode(): { ok: true; pending: typeof activePending } {
+    endMoveMode({ reason: 'cancel' });
+    return { ok: true, pending: activePending };
+  }
+
+  function endMoveMode(opts: { reason: 'cancel' | 'drop' }) {
+    if (!moveMode) return;
+    const el = resolveCurrentSelection();
+    if (el instanceof HTMLElement) {
+      el.classList.remove(OVERLAY_IDS.moveDragging);
+    }
+    document.documentElement.classList.remove('ifl-move-mode');
+    document.documentElement.classList.remove('ifl-move-dragging');
+    moveMode = false;
+    moveDragging = false;
+    moveDropAnchor = null;
+
+    window.removeEventListener('pointerdown', onMovePointerDown, true);
+    window.removeEventListener('pointermove', onMovePointerMove, true);
+    window.removeEventListener('pointerup', onMovePointerUp, true);
+    window.removeEventListener('keydown', onMoveKeyDown, true);
+    window.removeEventListener('click', onMoveClickSwallow, true);
+
+    overlay?.hideDropIndicator();
+    overlay?.hideDropContainer();
+    if (opts.reason === 'cancel') {
+      overlay?.showBanner(selectionVisible ? SELECTION_BANNER : REFINE_BANNER);
+    }
+    refreshSelectionOverlay();
+    notifyMoveModeChanged(false);
+  }
+
+  function notifyMoveModeChanged(active: boolean) {
+    chrome.runtime
+      .sendMessage({ type: 'MOVE_MODE_CHANGED', active } satisfies ExtensionMessage)
+      .catch(() => {});
+  }
+
+  function onMovePointerDown(event: PointerEvent) {
+    if (!moveMode) return;
+    const el = resolveCurrentSelection();
+    if (!el) return;
+    const target = event.target instanceof Node ? event.target : null;
+    // Grab-to-drag starts only when the pointerdown lands inside the
+    // selected element. Pointerdowns elsewhere cancel move mode so the
+    // user can click through to the page normally.
+    const inside =
+      target && el.contains(target) &&
+      !isOverlayNode(target instanceof Element ? target : null);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!inside) {
+      endMoveMode({ reason: 'cancel' });
+      return;
+    }
+    moveDragging = true;
+    document.documentElement.classList.add('ifl-move-dragging');
+    updateMoveIndicator(event.clientX, event.clientY);
+  }
+
+  function onMovePointerMove(event: PointerEvent) {
+    if (!moveMode || !moveDragging) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    updateMoveIndicator(event.clientX, event.clientY);
+  }
+
+  function onMovePointerUp(event: PointerEvent) {
+    if (!moveMode) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!moveDragging) return;
+    moveDragging = false;
+    document.documentElement.classList.remove('ifl-move-dragging');
+    const anchor = moveDropAnchor;
+    if (anchor && anchor.parent.isConnected) {
+      commitMove(anchor.parent, anchor.beforeChild);
+      endMoveMode({ reason: 'drop' });
+      return;
+    }
+    overlay?.hideDropIndicator();
+    overlay?.hideDropContainer();
+    overlay?.showBanner('No valid drop target — drag again or press ESC to cancel.');
+  }
+
+  function onMoveKeyDown(event: KeyboardEvent) {
+    if (!moveMode) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      endMoveMode({ reason: 'cancel' });
+    }
+  }
+
+  // While move mode is on, swallow click events synthesized from our own
+  // pointer sequence so the page doesn't fire onClick handlers / navigate
+  // when the drag passes through a <a> or <button>.
+  function onMoveClickSwallow(event: MouseEvent) {
+    if (!moveMode) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function updateMoveIndicator(x: number, y: number) {
+    const anchor = findDropAnchor(x, y);
+    if (!anchor) {
+      moveDropAnchor = null;
+      overlay?.hideDropIndicator();
+      overlay?.hideDropContainer();
+      return;
+    }
+    moveDropAnchor = anchor;
+    const parentRect = anchor.parent.getBoundingClientRect();
+    overlay?.showDropContainer(parentRect);
+    const indicatorRect = computeIndicatorRect(anchor.parent, anchor.beforeChild, parentRect);
+    overlay?.showDropIndicator(indicatorRect, describeDropPosition(anchor));
+  }
+
+  function findDropAnchor(
+    x: number,
+    y: number,
+  ): { parent: Element; beforeChild: Element | null } | null {
+    const moving = resolveCurrentSelection();
+    if (!moving) return null;
+
+    const stack = document.elementsFromPoint(x, y);
+    for (const node of stack) {
+      if (!(node instanceof Element)) continue;
+      if (isOverlayNode(node)) continue;
+      if (moving === node || moving.contains(node)) continue;
+
+      const parent = findBlockContainer(node, moving);
+      if (!parent) continue;
+      const beforeChild = pickInsertionAnchor(parent, x, y, moving);
+      return { parent, beforeChild };
+    }
+    return null;
+  }
+
+  // Walk up from `start` to the first block-candidate container that is
+  // NOT inside the moving element's own subtree (inserting into one of its
+  // own descendants would detach the element from the document).
+  function findBlockContainer(start: Element, moving: Element): Element | null {
+    let node: Element | null = start;
+    while (node && node !== document.documentElement && node !== document.body) {
+      if (moving.contains(node)) {
+        node = node.parentElement;
+        continue;
+      }
+      if (isBlockCandidate(node)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function pickInsertionAnchor(
+    parent: Element,
+    x: number,
+    y: number,
+    moving: Element,
+  ): Element | null {
+    const children = Array.from(parent.children).filter(
+      (child) => child !== moving && !isOverlayNode(child),
+    );
+    if (children.length === 0) return null;
+    const orientation = detectOrientation(children);
+
+    for (const child of children) {
+      const rect = child.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const midpoint =
+        orientation === 'vertical'
+          ? rect.top + rect.height / 2
+          : rect.left + rect.width / 2;
+      const pos = orientation === 'vertical' ? y : x;
+      if (pos < midpoint) return child;
+    }
+    return null;
+  }
+
+  function detectOrientation(children: Element[]): 'vertical' | 'horizontal' {
+    if (children.length < 2) return 'vertical';
+    // If consecutive children share the same top (within a few px) they're
+    // laid out in a row — treat the parent as a horizontal flex container.
+    const tops = children
+      .map((c) => c.getBoundingClientRect().top)
+      .filter((t) => Number.isFinite(t));
+    if (tops.length < 2) return 'vertical';
+    const min = Math.min(...tops);
+    const max = Math.max(...tops);
+    return max - min < 8 ? 'horizontal' : 'vertical';
+  }
+
+  function computeIndicatorRect(
+    parent: Element,
+    beforeChild: Element | null,
+    parentRect: DOMRect,
+  ): DropIndicatorRect {
+    const children = Array.from(parent.children).filter((c) => !isOverlayNode(c));
+    const orientation = detectOrientation(children);
+
+    if (orientation === 'vertical') {
+      let top: number;
+      if (beforeChild) {
+        top = beforeChild.getBoundingClientRect().top - 2;
+      } else {
+        const last = children[children.length - 1];
+        top = last
+          ? last.getBoundingClientRect().bottom - 1
+          : parentRect.top + 2;
+      }
+      return {
+        orientation: 'horizontal',
+        top,
+        left: parentRect.left + 4,
+        width: Math.max(40, parentRect.width - 8),
+        height: 4,
+      };
+    }
+
+    let left: number;
+    if (beforeChild) {
+      left = beforeChild.getBoundingClientRect().left - 2;
+    } else {
+      const last = children[children.length - 1];
+      left = last
+        ? last.getBoundingClientRect().right - 1
+        : parentRect.left + 2;
+    }
+    return {
+      orientation: 'vertical',
+      top: parentRect.top + 4,
+      left,
+      width: 4,
+      height: Math.max(40, parentRect.height - 8),
+    };
+  }
+
+  function describeDropPosition(anchor: {
+    parent: Element;
+    beforeChild: Element | null;
+  }): string {
+    const parentLabel = labelTarget(anchor.parent);
+    if (!anchor.beforeChild) return `into ${parentLabel} — at end`;
+    return `into ${parentLabel} — before ${labelTarget(anchor.beforeChild)}`;
+  }
+
+  function commitMove(newParent: Element, beforeChild: Element | null) {
+    const moving = resolveCurrentSelection();
+    if (!(moving instanceof HTMLElement) || !activePending) return;
+
+    // No-op drop: same parent, inserted before the element's current next
+    // sibling (or at end when it was already last). Skip the DOM write so
+    // we don't churn the diff.
+    const movingParent = moving.parentElement;
+    const currentNext = moving.nextElementSibling;
+    if (movingParent === newParent && beforeChild === currentNext) {
+      return;
+    }
+
+    try {
+      newParent.insertBefore(moving, beforeChild);
+    } catch (err) {
+      console.warn('[IFL] move insertBefore failed', err);
+      return;
+    }
+
+    const droppedAtOrigin =
+      originalParent === newParent &&
+      ((beforeChild === null && originalNextSibling === null) ||
+        beforeChild === originalNextSibling);
+
+    updatePendingDiffs((diffs) => {
+      const existing = diffs.find((diff) => diff.type === 'move');
+      const next: EditDiff[] = diffs.filter((diff) => diff.type !== 'move');
+
+      if (droppedAtOrigin) {
+        // Drag returned the element to its selection-time origin — drop
+        // the diff entirely so we don't store a no-op.
+        return next;
+      }
+
+      const label = activePending!.target.label;
+      const fromParent = existing?.type === 'move' ? null : originalParent;
+      const fromParentSelector =
+        existing?.type === 'move'
+          ? existing.fromParentSelector
+          : fromParent
+            ? generateSelector(fromParent)
+            : '';
+      const fromParentLabel =
+        existing?.type === 'move'
+          ? existing.fromParentLabel
+          : fromParent
+            ? labelTarget(fromParent)
+            : '';
+      const fromSiblings =
+        existing?.type === 'move'
+          ? existing.fromSiblings
+          : fromParent
+            ? describeSiblingsWithMover(fromParent, moving, originalNextSibling)
+            : [];
+
+      next.push({
+        id: existing?.id ?? uid(),
+        type: 'move',
+        selector: generateSelector(moving),
+        target: label,
+        movedLabel: label,
+        fromParentSelector,
+        fromParentLabel,
+        fromSiblings,
+        toParentSelector: generateSelector(newParent),
+        toParentLabel: labelTarget(newParent),
+        toSiblings: describeChildren(newParent),
+        toBeforeSelector: beforeChild ? generateSelector(beforeChild) : null,
+        toBeforeLabel: beforeChild ? labelTarget(beforeChild) : null,
+        createdAt: existing?.createdAt ?? nowIso(),
+      });
+      return next;
+    });
+
+    selectionVisible = true;
+    refreshSelectionOverlay();
+    overlay?.showBanner(
+      droppedAtOrigin
+        ? 'Returned to original position — move diff cleared.'
+        : 'Moved — captured as a diff. Discard to revert.',
+    );
+
+    // Async push so the panel's storage listener updates the UI without
+    // needing a reply from an already-completed start_move action.
+    if (activePending) {
+      chrome.runtime
+        .sendMessage({
+          type: 'TARGET_SELECTED',
+          payload: activePending,
+        } satisfies ExtensionMessage)
+        .catch(() => {});
+    }
+  }
+
+  // Describe the original sibling list with the moving element still shown
+  // at its origin slot — this gives prompt output a snapshot of "what the
+  // parent looked like before the move", even after we've already detached
+  // the element from it.
+  function describeSiblingsWithMover(
+    parent: Element,
+    moving: Element,
+    nextSibling: ChildNode | null,
+  ): string[] {
+    const base = describeChildren(parent);
+    if (parent.contains(moving)) return base;
+    const movingLabel = labelTarget(moving);
+    const beforeEl =
+      nextSibling instanceof Element ? (nextSibling as Element) : null;
+    if (!beforeEl) {
+      return [...base, movingLabel];
+    }
+    const idx = Array.from(parent.children).indexOf(beforeEl);
+    if (idx < 0) return [...base, movingLabel];
+    return [...base.slice(0, idx), movingLabel, ...base.slice(idx)];
+  }
+
   function refreshSelectionOverlay() {
   const element = resolveCurrentSelection();
   if (!element || !activePending) return;
@@ -1428,7 +1869,7 @@ if (!globalState.__iflContentScriptInitialized__) {
   }
 
   function onDocumentClick(event: MouseEvent) {
-  if (refineEnabled || inlineTextMode || !activePending || !selectionVisible) return;
+  if (refineEnabled || inlineTextMode || moveMode || !activePending || !selectionVisible) return;
   const target = event.target;
   if (!(target instanceof Node)) return;
 
@@ -1454,7 +1895,7 @@ if (!globalState.__iflContentScriptInitialized__) {
     event.preventDefault();
     event.stopImmediatePropagation();
     selectRegion(targetElement, {
-      revertPreviousPending: true,
+      revertPreviousPending: false,
       disableRefineMode: false,
     });
     return;
@@ -1515,6 +1956,7 @@ if (!globalState.__iflContentScriptInitialized__) {
 
   function resetSessionState(opts: { revertPreview: boolean }) {
   stopInlineTextEdit();
+  if (moveMode) endMoveMode({ reason: 'cancel' });
 
   if (opts.revertPreview) {
     for (const [element, originalText] of textOriginals.entries()) {
@@ -1565,8 +2007,114 @@ if (!globalState.__iflContentScriptInitialized__) {
 
     if (msg.type === 'APPLY_DIRECT_EDIT') {
       sendResponse(applyDirectEdit(msg.action));
+      return;
+    }
+
+    if (msg.type === 'REVERT_DIFFS') {
+      revertDiffs(msg.diffs);
+      sendResponse({ ok: true });
+      return;
     }
   });
+
+  // Revert a batch of diffs on the live preview. Runs in reverse order so
+  // later reorders/moves unwind before the earlier structural edits they
+  // depend on. Best-effort: diffs whose elements were removed from the DOM
+  // (e.g. page navigation, subsequent edits) are skipped silently.
+  function revertDiffs(diffs: EditDiff[]): void {
+    for (let i = diffs.length - 1; i >= 0; i -= 1) {
+      try {
+        revertSingleDiff(diffs[i]);
+      } catch (err) {
+        console.warn('[IFL] revert diff failed', diffs[i], err);
+      }
+    }
+  }
+
+  function revertSingleDiff(diff: EditDiff): void {
+    if (diff.type === 'text_change') {
+      const el = document.querySelector(diff.selector);
+      if (el instanceof HTMLElement) {
+        el.innerText = diff.before;
+      }
+      return;
+    }
+    if (diff.type === 'hide' || diff.type === 'remove') {
+      const el = document.querySelector(diff.selector);
+      if (el instanceof HTMLElement) {
+        el.style.display = diff.originalDisplay ?? '';
+      }
+      return;
+    }
+    if (diff.type === 'style_change') {
+      const el = document.querySelector(diff.selector);
+      if (!(el instanceof HTMLElement)) return;
+      if (diff.property === 'translate') {
+        el.style.transform = diff.before;
+      } else if (diff.property === 'fontSize') {
+        el.style.fontSize = diff.before;
+      } else if (diff.property === 'borderRadius') {
+        el.style.borderRadius = diff.before;
+      } else if (diff.property === 'width') {
+        el.style.width = diff.before;
+      } else if (diff.property === 'height') {
+        el.style.height = diff.before;
+      }
+      return;
+    }
+    if (
+      diff.type === 'image_replace_intent' ||
+      diff.type === 'image_regenerate_intent'
+    ) {
+      if (!diff.originalSrc) return;
+      const target = document.querySelector(diff.selector);
+      const img =
+        target instanceof HTMLImageElement
+          ? target
+          : target?.querySelector('img') ?? null;
+      if (img instanceof HTMLImageElement) {
+        img.src = diff.originalSrc;
+      }
+      return;
+    }
+    if (diff.type === 'move') {
+      const moved = document.querySelector(diff.selector);
+      const fromParent = document.querySelector(diff.fromParentSelector);
+      if (!(moved instanceof Element) || !(fromParent instanceof Element)) return;
+      // Re-insert at the original slot using fromSiblings: the moved element
+      // used to sit where its own label appears in that list.
+      const slot = diff.fromSiblings.indexOf(diff.movedLabel);
+      const siblingAfter =
+        slot >= 0 && slot < diff.fromSiblings.length - 1
+          ? diff.fromSiblings[slot + 1]
+          : null;
+      let anchor: Element | null = null;
+      if (siblingAfter) {
+        anchor =
+          Array.from(fromParent.children).find(
+            (child) => child !== moved && labelTarget(child) === siblingAfter,
+          ) ?? null;
+      }
+      if (anchor) fromParent.insertBefore(moved, anchor);
+      else fromParent.appendChild(moved);
+      return;
+    }
+    if (diff.type === 'reorder') {
+      const el = document.querySelector(diff.selector);
+      const parent = el?.parentElement;
+      if (!parent) return;
+      // Re-sort children of `parent` so their human labels match diff.before.
+      const byLabel = new Map<string, Element>();
+      for (const child of Array.from(parent.children)) {
+        const key = labelTarget(child);
+        if (!byLabel.has(key)) byLabel.set(key, child);
+      }
+      for (const label of diff.before) {
+        const child = byLabel.get(label);
+        if (child) parent.appendChild(child);
+      }
+    }
+  }
 
   // Panel rename writes to storage — mirror the label into activePending so
   // the on-page selection overlay stays in sync with what the user typed.
