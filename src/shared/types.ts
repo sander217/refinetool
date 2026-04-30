@@ -258,6 +258,9 @@ export type DirectEditAction =
   // Lets the user pick the text node *inside* a button or link without the
   // picker stopping at the button (LEAF_TAGS guard).
   | { type: 'pick_inner_text' }
+  // Pop the most recent diff from the active pending: revert its DOM mutation
+  // and remove it from pending.diffs. No-op when there are no diffs.
+  | { type: 'undo_last_diff' }
   | { type: 'reorder_selected'; direction: 'up' | 'down' }
   | { type: 'start_move' }
   | { type: 'cancel_move' }

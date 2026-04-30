@@ -565,6 +565,17 @@ function applyDirectEdit(action: DirectEditAction): {
       selectRegion(inner);
       return { ok: true, pending: activePending };
     }
+    if (action.type === 'undo_last_diff') {
+      if (!activePending || activePending.diffs.length === 0) {
+        return { ok: false, error: 'nothing to undo' };
+      }
+      const last = activePending.diffs[activePending.diffs.length - 1];
+      // revertDiffs runs the inverse mutation against the live DOM.
+      revertDiffs([last]);
+      // Then drop it from pending so the panel's diff list updates.
+      activePending.diffs = activePending.diffs.slice(0, -1);
+      return { ok: true, pending: activePending };
+    }
     if (action.type === 'attach_image_reference') {
       // v1 only handles url-kind. note / figma / upload are ignored — the
       // panel doesn't expose them yet.
