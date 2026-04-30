@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Sample artifact</title>
+    <style>
+      body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; color: #0f172a; background: #fff; }
+      header { padding: 24px 40px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
+      header h1 { margin: 0; font-size: 18px; font-weight: 700; }
+      header nav { display: flex; gap: 24px; font-size: 14px; color: #475569; }
+      .hero { padding: 80px 40px; text-align: left; }
+      .hero h2 { margin: 0 0 16px; font-size: 56px; font-weight: 300; letter-spacing: -1px; }
+      .hero p { margin: 0 0 32px; font-size: 18px; color: #475569; max-width: 580px; }
+      .hero .cta { display: inline-block; padding: 14px 28px; background: #2563eb; color: #fff; border-radius: 8px; font-weight: 600; cursor: pointer; }
+      .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; padding: 40px; background: #f8fafc; }
+      .features .card { background: #fff; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; }
+      .features .card h3 { margin: 0 0 8px; font-size: 18px; }
+      .features .card p { margin: 0; color: #64748b; font-size: 14px; line-height: 1.5; }
+      footer { padding: 40px; text-align: center; color: #94a3b8; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Acme Cloud</h1>
+      <nav>
+        <span>Product</span>
+        <span>Pricing</span>
+        <span>Docs</span>
+        <span>Sign in</span>
+      </nav>
+    </header>
+    <section class="hero">
+      <h2>Build faster, ship calmer.</h2>
+      <p>The deploy platform engineering teams trust to keep their evenings free. Set up in minutes, scale to millions, sleep through the night.</p>
+      <a class="cta">Start free trial</a>
+    </section>
+    <section class="features">
+      <article class="card">
+        <h3>Zero-config deploys</h3>
+        <p>Push to git, get a URL. No build steps, no YAML, no surprises in production.</p>
+      </article>
+      <article class="card">
+        <h3>Edge by default</h3>
+        <p>Traffic routes to the closest region automatically. Cold starts under 50ms.</p>
+      </article>
+      <article class="card">
+        <h3>Plays well with others</h3>
+        <p>Native integrations with the tools your team already uses — no migration tax.</p>
+      </article>
+    </section>
+    <footer>Sample artifact for refinetool iframe demo · all content is fake.</footer>
+  </body>
+</html>
