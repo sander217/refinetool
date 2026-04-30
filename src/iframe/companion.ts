@@ -195,6 +195,44 @@ function onClick(ev: MouseEvent): void {
   selectRegion(picked);
 }
 
+// Double-click on (or inside) the current selection drills to the inner-most
+// text element AND immediately starts inline editing — so the user can pick
+// a button, double-click, and start typing the new label without going
+// through the panel's "Pick text inside" + "Edit text" buttons.
+function onDblClick(ev: MouseEvent): void {
+  if (!refineEnabled) return;
+  if (inlineTextActive) return;
+  if (!selected) return;
+  // Only triggers when the dblclick is within the current selection.
+  const el = document.elementFromPoint(ev.clientX, ev.clientY);
+  if (!el || !(el instanceof Element)) return;
+  if (!selected.contains(el) && el !== selected) return;
+
+  // If the selection itself IS already a text-bearing leaf (h1, p, span,
+  // etc.), drill is a no-op — just start editing.
+  let target: Element = selected;
+  if (TEXT_TAGS.has(selected.tagName.toLowerCase())) {
+    // already at a text element — edit in place
+  } else {
+    const inner = findInnerTextTarget(selected);
+    if (inner) target = inner;
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  // Re-select onto the inner element if we drilled.
+  if (target !== selected) selectRegion(target);
+  // Then immediately enter edit mode and broadcast the updated pending so
+  // the panel reflects the editing state.
+  try {
+    startInlineTextEdit();
+    if (activePending) {
+      postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending: activePending });
+    }
+  } catch (err) {
+    console.warn('[ifl-companion] dblclick → inline edit failed', err);
+  }
+}
+
 function onKey(ev: KeyboardEvent): void {
   if (!refineEnabled) return;
   if (ev.key === 'Escape') {
@@ -225,10 +263,12 @@ function setRefineMode(enabled: boolean): void {
     document.documentElement.classList.add('ifl-picking-active');
     document.addEventListener('mousemove', onMouseMove, true);
     document.addEventListener('click', onClick, true);
+    document.addEventListener('dblclick', onDblClick, true);
     document.addEventListener('keydown', onKey, true);
   } else {
     document.removeEventListener('mousemove', onMouseMove, true);
     document.removeEventListener('click', onClick, true);
+    document.removeEventListener('dblclick', onDblClick, true);
     document.removeEventListener('keydown', onKey, true);
     document.documentElement.classList.remove('ifl-picking-active');
     overlay?.hideBanner();
