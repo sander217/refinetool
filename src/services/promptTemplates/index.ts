@@ -36,6 +36,8 @@ export function describeDiff(diff: EditDiff): string {
       }`;
     case 'style_change':
       return `${diff.property} change on ${diff.target} (${diff.selector}): ${diff.before} -> ${diff.after}`;
+    case 'color_change':
+      return `${diff.role} change on ${diff.target} (${diff.selector}): ${diff.before} -> ${diff.after}`;
   }
 }
 

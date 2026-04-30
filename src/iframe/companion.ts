@@ -15,12 +15,16 @@
 import { buildSelectedTarget, pickMeaningfulTarget } from '../content/dom';
 import { OVERLAY_IDS, createOverlay, type OverlayHandles } from '../content/overlay';
 import type {
+  ColorChangeDiff,
+  ColorRole,
   DirectEditAction,
   EditDiff,
   HideDiff,
   PendingSelection,
   RemoveDiff,
   SelectedTarget,
+  StyleChangeDiff,
+  StyleProperty,
   TextChangeDiff,
 } from '../shared/types';
 
@@ -52,6 +56,21 @@ let activePending: PendingSelection | null = null;
 let inlineTextActive = false;
 let originalTextBeforeEdit: string | null = null;
 
+// Originals captured when a region is selected, so style mutations can be
+// reverted (REVERT_DIFFS) and so the panel can show "before" values in
+// generated prompts. Cleared on reset_pending_selection.
+type OriginalStyles = {
+  fontSize: string;
+  fontWeight: string;
+  borderRadius: string;
+  borderWidth: string;
+  padding: string;
+  color: string;
+  backgroundColor: string;
+  borderColor: string;
+};
+let originalStyles: OriginalStyles | null = null;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -82,9 +101,24 @@ function broadcastRefineMode(enabled: boolean): void {
   postToHost({ ns: PROTOCOL_NAMESPACE, type: 'REFINE_MODE_CHANGED', enabled });
 }
 
+function captureOriginalStyles(el: Element): OriginalStyles {
+  const cs = window.getComputedStyle(el);
+  return {
+    fontSize: cs.fontSize,
+    fontWeight: cs.fontWeight,
+    borderRadius: cs.borderRadius,
+    borderWidth: cs.borderWidth,
+    padding: cs.padding,
+    color: cs.color,
+    backgroundColor: cs.backgroundColor,
+    borderColor: cs.borderColor,
+  };
+}
+
 function selectRegion(picked: Element): void {
   selected = picked;
   inlineTextActive = false;
+  originalStyles = captureOriginalStyles(picked);
   const target: SelectedTarget = buildSelectedTarget(picked);
   const pending: PendingSelection = {
     tabId: -1,
@@ -247,6 +281,90 @@ function removeSelected(): RemoveDiff {
   };
 }
 
+// Style mutation: applies absolute value, returns the diff that records it.
+// If a diff for the same property already exists, the function updates that
+// existing diff's `after` instead of pushing a duplicate — this keeps the
+// "n drags of a slider = 1 diff" invariant.
+function setStyleValue(
+  property: 'fontSize' | 'fontWeight' | 'borderRadius' | 'borderWidth' | 'padding',
+  value: number,
+): StyleChangeDiff | null {
+  if (!selected || !activePending || !(selected instanceof HTMLElement) || !originalStyles) return null;
+
+  const formatted = property === 'fontWeight' ? String(value) : `${value}px`;
+  if (property === 'fontWeight') {
+    selected.style.fontWeight = formatted;
+  } else if (property === 'borderRadius') {
+    selected.style.borderRadius = formatted;
+  } else if (property === 'fontSize') {
+    selected.style.fontSize = formatted;
+  } else if (property === 'borderWidth') {
+    selected.style.borderWidth = formatted;
+    // Ensure border has a visible style — the user is asking for a border.
+    if (!selected.style.borderStyle && getComputedStyle(selected).borderStyle === 'none') {
+      selected.style.borderStyle = 'solid';
+    }
+  } else if (property === 'padding') {
+    selected.style.padding = formatted;
+  }
+
+  const before = (originalStyles as Record<typeof property, string>)[property];
+  const existing = activePending.diffs.find(
+    (d) => d.type === 'style_change' && (d as StyleChangeDiff).property === property,
+  ) as StyleChangeDiff | undefined;
+  if (existing) {
+    existing.after = formatted;
+    return existing;
+  }
+  return {
+    id: diffId(),
+    type: 'style_change',
+    property: property as StyleProperty,
+    selector: activePending.target.selector,
+    target: activePending.target.label,
+    createdAt: nowIso(),
+    before,
+    after: formatted,
+  };
+}
+
+function setColorValue(role: ColorRole, value: string): ColorChangeDiff | null {
+  if (!selected || !activePending || !(selected instanceof HTMLElement) || !originalStyles) return null;
+
+  if (role === 'color') {
+    selected.style.color = value;
+  } else if (role === 'backgroundColor') {
+    selected.style.backgroundColor = value;
+  } else if (role === 'borderColor') {
+    selected.style.borderColor = value;
+    if (!selected.style.borderStyle && getComputedStyle(selected).borderStyle === 'none') {
+      selected.style.borderStyle = 'solid';
+    }
+    if (!selected.style.borderWidth && getComputedStyle(selected).borderWidth === '0px') {
+      selected.style.borderWidth = '1px';
+    }
+  }
+
+  const before = (originalStyles as Record<ColorRole, string>)[role];
+  const existing = activePending.diffs.find(
+    (d) => d.type === 'color_change' && (d as ColorChangeDiff).role === role,
+  ) as ColorChangeDiff | undefined;
+  if (existing) {
+    existing.after = value;
+    return existing;
+  }
+  return {
+    id: diffId(),
+    type: 'color_change',
+    role,
+    selector: activePending.target.selector,
+    target: activePending.target.label,
+    createdAt: nowIso(),
+    before,
+    after: value,
+  };
+}
+
 function applyDirectEdit(action: DirectEditAction): {
   ok: boolean;
   pending?: PendingSelection | null;
@@ -272,11 +390,28 @@ function applyDirectEdit(action: DirectEditAction): {
       if (activePending) activePending.diffs = [...activePending.diffs, diff];
       return { ok: true, pending: activePending };
     }
+    if (action.type === 'set_style_value') {
+      const diff = setStyleValue(action.property, action.value);
+      if (diff && activePending) {
+        const idx = activePending.diffs.findIndex((d) => d.id === diff.id);
+        if (idx === -1) activePending.diffs = [...activePending.diffs, diff];
+      }
+      return { ok: true, pending: activePending };
+    }
+    if (action.type === 'set_color_value') {
+      const diff = setColorValue(action.role, action.value);
+      if (diff && activePending) {
+        const idx = activePending.diffs.findIndex((d) => d.id === diff.id);
+        if (idx === -1) activePending.diffs = [...activePending.diffs, diff];
+      }
+      return { ok: true, pending: activePending };
+    }
     if (action.type === 'reset_pending_selection') {
       // Optionally revert all diffs on the selection before clearing.
       if (action.revert && activePending) revertDiffs(activePending.diffs);
       selected = null;
       activePending = null;
+      originalStyles = null;
       overlay?.hideSelection();
       return { ok: true, pending: null };
     }
@@ -300,8 +435,25 @@ function revertDiffs(diffs: EditDiff[]): { ok: boolean; error?: string } {
         if (node instanceof HTMLElement) node.innerText = diff.before;
       } else if (diff.type === 'hide' || diff.type === 'remove') {
         if (node instanceof HTMLElement) node.style.display = diff.originalDisplay ?? '';
+      } else if (diff.type === 'style_change') {
+        if (!(node instanceof HTMLElement)) continue;
+        // Restore the inline style to what it was *before* we started
+        // mutating. The captured `before` value comes from getComputedStyle,
+        // so writing it back as inline-style is functionally equivalent and
+        // is what matches the panel's "before" string.
+        if (diff.property === 'fontSize') node.style.fontSize = diff.before;
+        else if (diff.property === 'fontWeight') node.style.fontWeight = diff.before;
+        else if (diff.property === 'borderRadius') node.style.borderRadius = diff.before;
+        else if (diff.property === 'borderWidth') node.style.borderWidth = diff.before;
+        else if (diff.property === 'padding') node.style.padding = diff.before;
+        // translate / width / height not used by panel v1 — leave alone
+      } else if (diff.type === 'color_change') {
+        if (!(node instanceof HTMLElement)) continue;
+        if (diff.role === 'color') node.style.color = diff.before;
+        else if (diff.role === 'backgroundColor') node.style.backgroundColor = diff.before;
+        else if (diff.role === 'borderColor') node.style.borderColor = diff.before;
       }
-      // Other diff types are no-op in v1.
+      // Other diff types (reorder, move, image_*) are no-op in v1.
     } catch (err) {
       console.warn('[ifl-companion] revert failed for diff', diff, err);
     }

@@ -142,10 +142,17 @@ export type ImageRegenerateIntentDiff = EditDiffBase & {
 // Preview-only style nudges: position (transform translate), font size,
 // border radius, and explicit width/height. One diff per property per
 // region — repeated adjustments update the same diff's `after` value.
+//
+// `padding`, `borderWidth`, and `fontWeight` are absolute-value setters used
+// by the iframe panel's slider/stepper UI; `translate`, `width`, `height`
+// remain nudge-style (relative direction) for keyboard-driven editing.
 export type StyleProperty =
   | 'translate'
   | 'fontSize'
+  | 'fontWeight'
   | 'borderRadius'
+  | 'borderWidth'
+  | 'padding'
   | 'width'
   | 'height';
 
@@ -158,6 +165,17 @@ export type StyleChangeDiff = EditDiffBase & {
   after: string;
 };
 
+// Absolute color setter for the iframe panel's color pickers. One diff per
+// (selector, role) — repeated picks update the same diff's `after` value.
+export type ColorRole = 'color' | 'backgroundColor' | 'borderColor';
+
+export type ColorChangeDiff = EditDiffBase & {
+  type: 'color_change';
+  role: ColorRole;
+  before: string; // hex / rgb string captured from getComputedStyle
+  after: string;  // hex string the user picked
+};
+
 export type EditDiff =
   | TextChangeDiff
   | RemoveDiff
@@ -166,7 +184,8 @@ export type EditDiff =
   | MoveDiff
   | ImageReplaceIntentDiff
   | ImageRegenerateIntentDiff
-  | StyleChangeDiff;
+  | StyleChangeDiff
+  | ColorChangeDiff;
 
 export type RefinementItem = {
   id: string;
@@ -254,6 +273,21 @@ export type DirectEditAction =
   | { type: 'adjust_font_size'; direction: 'up' | 'down' }
   | { type: 'adjust_border_radius'; direction: 'up' | 'down' }
   | { type: 'adjust_size'; axis: 'width' | 'height'; direction: 'up' | 'down' }
+  // Absolute-value setters used by the iframe panel's sliders and color
+  // pickers. Distinct from the stepper-style `adjust_*` actions because the
+  // panel UI passes a final value instead of a direction.
+  | {
+      type: 'set_style_value';
+      property: 'fontSize' | 'fontWeight' | 'borderRadius' | 'borderWidth' | 'padding';
+      /** Numeric value in CSS pixels. fontWeight uses 100-900 (no unit). */
+      value: number;
+    }
+  | {
+      type: 'set_color_value';
+      role: ColorRole;
+      /** CSS color string — typically a 7-char hex like "#0057ff". */
+      value: string;
+    }
   | { type: 'reset_style_adjustments' }
   | { type: 'reset_pending_selection'; revert?: boolean };
 

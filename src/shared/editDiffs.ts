@@ -1,4 +1,5 @@
 import type {
+  ColorRole,
   EditDiff,
   ImageRegenerateIntentDiff,
   ImageReplaceIntentDiff,
@@ -10,9 +11,18 @@ import type {
 const STYLE_PROPERTY_LABELS: Record<StyleProperty, string> = {
   translate: 'Position',
   fontSize: 'Font size',
+  fontWeight: 'Font weight',
   borderRadius: 'Border radius',
+  borderWidth: 'Border width',
+  padding: 'Padding',
   width: 'Width',
   height: 'Height',
+};
+
+const COLOR_ROLE_LABELS: Record<ColorRole, string> = {
+  color: 'Text color',
+  backgroundColor: 'Background color',
+  borderColor: 'Border color',
 };
 
 export function describeEditDiff(diff: EditDiff): string {
@@ -40,6 +50,10 @@ export function describeEditDiff(diff: EditDiff): string {
     const hint = diff.prompt ? ` — "${diff.prompt}"` : '';
     return `${diff.target}: regenerate image${hint}`;
   }
+  if (diff.type === 'color_change') {
+    const label = COLOR_ROLE_LABELS[diff.role].toLowerCase();
+    return `${diff.target}: ${label} ${diff.before} -> ${diff.after}`;
+  }
   // style_change
   const label = STYLE_PROPERTY_LABELS[diff.property];
   return `${diff.target}: ${label.toLowerCase()} ${diff.before} -> ${diff.after}`;
@@ -53,6 +67,7 @@ export function diffTypeLabel(diff: EditDiff): string {
   if (diff.type === 'move') return 'Move';
   if (diff.type === 'image_replace_intent') return 'Replace image';
   if (diff.type === 'image_regenerate_intent') return 'Regenerate image';
+  if (diff.type === 'color_change') return COLOR_ROLE_LABELS[diff.role];
   return STYLE_PROPERTY_LABELS[diff.property];
 }
 
@@ -79,6 +94,7 @@ export type DiffCountBreakdown = {
   move: number;
   image: number;
   style: number;
+  color: number;
 };
 
 export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
@@ -90,6 +106,7 @@ export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
     move: 0,
     image: 0,
     style: 0,
+    color: 0,
   };
   for (const diff of diffs) {
     if (diff.type === 'text_change') counts.text += 1;
@@ -97,6 +114,7 @@ export function diffCountBreakdown(diffs: EditDiff[]): DiffCountBreakdown {
     else if (diff.type === 'reorder') counts.reorder += 1;
     else if (diff.type === 'move') counts.move += 1;
     else if (diff.type === 'style_change') counts.style += 1;
+    else if (diff.type === 'color_change') counts.color += 1;
     else counts.image += 1;
   }
   return counts;
@@ -149,6 +167,10 @@ export function formatEditDiffForPrompt(diff: EditDiff): string {
     if (diff.originalSrc) lines.push(`  Current src: ${sanitizeSrcForPrompt(diff.originalSrc)}`);
     if (diff.prompt) lines.push(`  Prompt hint: ${diff.prompt}`);
     return lines.join('\n');
+  }
+  if (diff.type === 'color_change') {
+    const label = COLOR_ROLE_LABELS[diff.role];
+    return `- ${label} change on ${diff.target}: ${diff.before} -> ${diff.after}`;
   }
   const label = STYLE_PROPERTY_LABELS[diff.property];
   return `- ${label} change on ${diff.target}: ${diff.before} -> ${diff.after}`;
