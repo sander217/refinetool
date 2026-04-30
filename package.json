@@ -8,7 +8,11 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:companion": "vite build --config vite.companion.config.ts",
+    "dev:iframe": "npm run build:companion && vite --config vite.iframe.config.ts",
+    "build:iframe": "npm run build:companion && vite build --config vite.iframe.config.ts",
+    "preview:iframe": "vite preview --config vite.iframe.config.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

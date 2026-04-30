@@ -1,25 +1,95 @@
-# Interface Finetuning Layer — Chrome Extension MVP
+# Interface Finetuning Layer
 
-A locally-installable Chrome extension for refining AI-generated UI in two coordinated ways:
+A region-picker + annotation + diff-capture tool for refining AI-generated UI.
 
-1. annotate a selected region with typed or voice notes
-2. make a few lightweight direct edits on the live preview
-3. capture those edits as structured diffs
-4. generate prompt-ready output for Claude Code and Codex
+Ships in **two forms** that share the same core (DOM picker, overlay, diff types, services):
 
-This is still intentionally narrow. It is not trying to become Figma, Webflow, or a full visual editor.
+1. **Chrome extension** — operates on any AI tool's output (v0, Lovable, Bolt, raw Claude HTML…)
+2. **Embedded iframe panel** — drops into any host page that previews artifacts in an iframe (e.g. sanstudio's Gate 3 preview)
+
+Both produce the same `RefinementItem` shape, so downstream prompt generation, JSON export, and integration with Claude Code / Codex work identically.
 
 ---
 
-## Setup
+## Form 1 — Chrome extension
 
 ```bash
-cd /Users/sanderchen/Documents/Claude/Projects/freeyourhand
 npm install
 npm run build
 ```
 
 Load `dist/` as an unpacked extension in `chrome://extensions`.
+
+---
+
+## Form 2 — Embedded iframe panel
+
+For host pages that already render their AI output in an iframe (sanstudio, internal tools, etc.). No extension install required for end users.
+
+### Build
+
+```bash
+npm install
+npm run build:iframe
+```
+
+Outputs:
+- `dist-iframe/` — the host bundle (HTML + JS)
+- `public/companion.iife.js` — the script the host injects into the artifact iframe
+
+### Local demo
+
+```bash
+npm run dev:iframe
+```
+
+Opens `http://localhost:5174` with a sample artifact + the panel beside it. Click **Start picker**, click any region in the iframe, edit/hide/remove, save the refinement, export JSON.
+
+### Embedding in a host page
+
+```ts
+import { mountIframePanel } from 'refinetool/iframe/host';
+
+const iframe = document.getElementById('artifact-iframe') as HTMLIFrameElement;
+const panelHost = document.getElementById('refine-panel');
+
+mountIframePanel({
+  panelHost,
+  iframe,
+  companionUrl: '/companion.iife.js',  // wherever you serve the bundle
+  targetOrigin: '*',                    // or the artifact's origin if cross-origin
+});
+```
+
+### Architecture
+
+```text
+host page (parent)                            artifact iframe
+┌─────────────────────────────┐               ┌─────────────────────────┐
+│ Panel UI (React)            │               │ generated artifact      │
+│  ↳ postmessage transport    │ ← postMessage │  ↳ refine-companion.js  │
+│       .send(req)            │ ─────────→    │       .handle(req)      │
+│                             │ ←──────────── │                         │
+└─────────────────────────────┘    response   └─────────────────────────┘
+```
+
+The companion is a ~30 kB bundle that imports the same `dom.ts` (picker) and `overlay.ts` (visuals) the Chrome content script uses. State (items, pending) lives in the host's `localStorage` instead of `chrome.storage`.
+
+### Iframe scope (v1)
+
+| Capability | Status |
+|---|---|
+| Region picking | ✅ |
+| Inline text edit | ✅ |
+| Hide / remove | ✅ |
+| Annotation + save | ✅ |
+| JSON export | ✅ |
+| Reorder | ⏳ port from content/index.ts |
+| Drag-to-move | ⏳ |
+| Image intent (replace / regenerate) | ⏳ |
+| Style nudges (font / position / radius) | ⏳ |
+
+The Chrome extension still has the full feature set; iframe variant is being grown incrementally to match. Adding a missing capability = extend `src/iframe/companion.ts`'s action handler + the panel buttons in `src/iframe/host.tsx`.
 
 ---
 
@@ -39,15 +109,25 @@ Load `dist/` as an unpacked extension in `chrome://extensions`.
 
 ---
 
-## Architecture That Already Existed
-
-The repo already had a good MVP split before the direct-edit upgrade:
+## Architecture
 
 ```text
 src/
-├── background/          Service worker message hub + per-tab refine mode
-├── content/             Region picking, selector generation, in-page overlay
-├── panel/               React side panel UI
+├── background/          Chrome service worker — message hub + per-tab refine mode
+├── content/             Chrome content script — region picking + DOM ops + overlay
+│   ├── dom.ts           PURE — picker + selector + breadcrumb (reused by iframe)
+│   ├── overlay.ts       PURE — overlay creation + styles (reused by iframe)
+│   └── index.ts         Chrome-coupled glue (full feature set)
+├── panel/               React side panel UI (Chrome extension)
+├── iframe/              Embedded iframe form
+│   ├── companion.ts     Runs INSIDE the artifact iframe, mirrors content/index.ts core ops
+│   ├── host.tsx         Runs in the host page, mounts panel + injects companion
+│   ├── main.tsx         Standalone demo entry
+│   └── host.html        Demo page
+├── transports/          ★ Hybrid abstraction
+│   ├── types.ts         Transport interface
+│   ├── chrome.ts        Wraps chrome.runtime / chrome.storage
+│   └── postmessage.ts   Wraps window.postMessage RPC + localStorage
 ├── services/
 │   ├── parser/          Raw note -> structured refinement fields
 │   ├── promptTemplates/ Prompt renderers for Claude Code / Codex / generic
@@ -56,6 +136,8 @@ src/
 ├── shared/              Core types, messages, small utilities
 └── storage/             chrome.storage.local wrappers
 ```
+
+`content/dom.ts` and `content/overlay.ts` contain zero `chrome.*` calls — that's why both forms can share them. `services/`, `shared/types.ts`, and `shared/editDiffs.ts` are also transport-agnostic and shared.
 
 The original runtime flow was:
 
