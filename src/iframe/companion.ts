@@ -20,6 +20,8 @@ import type {
   DirectEditAction,
   EditDiff,
   HideDiff,
+  ImageRegenerateIntentDiff,
+  ImageReplaceIntentDiff,
   PendingSelection,
   RemoveDiff,
   SelectedTarget,
@@ -134,6 +136,34 @@ function selectRegion(picked: Element): void {
   postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending });
 }
 
+// Scroll/resize tracking: keep the selection overlay anchored to its
+// element as the page scrolls or the viewport resizes. Throttled via rAF
+// so a fast scroll doesn't flood layout work.
+let viewportRaf = 0;
+function refreshSelectionOverlay(): void {
+  if (!selected || !overlay) return;
+  if (!document.contains(selected)) {
+    overlay.hideSelection();
+    return;
+  }
+  const rect = selected.getBoundingClientRect();
+  // currentSelectionState mirrors what the chrome content-script tracks; in
+  // the iframe variant we don't have an "edited" flag yet, so 'locked' is
+  // correct unless we're mid-inline-text-edit.
+  const state = inlineTextActive ? 'editing' : 'locked';
+  overlay.showSelection(rect, activePending?.target.label ?? '', state);
+}
+function onViewportChange(): void {
+  if (viewportRaf) return;
+  viewportRaf = window.requestAnimationFrame(() => {
+    viewportRaf = 0;
+    if (refineEnabled && overlay && currentHover && document.contains(currentHover)) {
+      overlay.showHover(currentHover.getBoundingClientRect());
+    }
+    refreshSelectionOverlay();
+  });
+}
+
 function onMouseMove(ev: MouseEvent): void {
   if (!refineEnabled) return;
   const el = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -173,7 +203,21 @@ function onKey(ev: KeyboardEvent): void {
   }
 }
 
+// Viewport listeners stay attached for the lifetime of the companion so the
+// selection box keeps anchoring during scroll even when picker mode is OFF.
+function attachViewportListenersOnce(): void {
+  // capture: true so we hear nested scrollers as well; passive: true since
+  // we don't preventDefault.
+  document.addEventListener('scroll', onViewportChange, { capture: true, passive: true });
+  window.addEventListener('resize', onViewportChange, { passive: true });
+}
+let viewportListenersAttached = false;
+
 function setRefineMode(enabled: boolean): void {
+  if (!viewportListenersAttached) {
+    attachViewportListenersOnce();
+    viewportListenersAttached = true;
+  }
   if (refineEnabled === enabled) return;
   refineEnabled = enabled;
   if (enabled) {
@@ -365,6 +409,100 @@ function setColorValue(role: ColorRole, value: string): ColorChangeDiff | null {
   };
 }
 
+// Walk into the current selection looking for the most specific text-bearing
+// descendant. Lets the user "drill into" a button or link to address its inner
+// text when the picker's LEAF_TAGS guard would otherwise stop them at the
+// button itself.
+const TEXT_TAGS = new Set([
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'p', 'span', 'a', 'em', 'strong', 'small', 'label', 'li', 'blockquote',
+]);
+function findInnerTextTarget(root: Element): Element | null {
+  // Prefer a descendant whose tag is text-bearing AND has actual text.
+  const candidates: Element[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node: Element | null = walker.nextNode() as Element | null;
+  while (node) {
+    if (TEXT_TAGS.has(node.tagName.toLowerCase())) {
+      const text = (node as HTMLElement).innerText?.trim();
+      if (text && text.length > 0) candidates.push(node);
+    }
+    node = walker.nextNode() as Element | null;
+  }
+  if (candidates.length === 0) return null;
+  // Prefer the deepest non-empty text node — it's the "most specific."
+  candidates.sort((a, b) => depthOf(b) - depthOf(a));
+  return candidates[0];
+}
+function depthOf(el: Element): number {
+  let d = 0;
+  let n: Element | null = el;
+  while (n) {
+    d++;
+    n = n.parentElement;
+  }
+  return d;
+}
+
+function attachImageReference(
+  referenceUrl: string,
+): ImageReplaceIntentDiff | null {
+  if (!selected || !activePending) return null;
+  const img = (selected.tagName.toLowerCase() === 'img'
+    ? (selected as HTMLImageElement)
+    : (selected.querySelector('img') as HTMLImageElement | null));
+  const originalSrc = img?.src;
+  // Live preview: if the user gave us a URL and the selection has an <img>,
+  // swap its src so they see the change immediately.
+  if (img && referenceUrl) {
+    img.src = referenceUrl;
+  }
+  // De-dupe: one image_replace_intent per selector, mutate in place.
+  const existing = activePending.diffs.find(
+    (d) => d.type === 'image_replace_intent',
+  ) as ImageReplaceIntentDiff | undefined;
+  if (existing) {
+    existing.referenceUrl = referenceUrl;
+    existing.appliedToDom = !!img;
+    return existing;
+  }
+  return {
+    id: diffId(),
+    type: 'image_replace_intent',
+    selector: activePending.target.selector,
+    target: activePending.target.label,
+    createdAt: nowIso(),
+    originalSrc,
+    referenceKind: 'url',
+    referenceUrl,
+    appliedToDom: !!img,
+  };
+}
+
+function markImageRegenerate(prompt?: string): ImageRegenerateIntentDiff | null {
+  if (!selected || !activePending) return null;
+  const img = (selected.tagName.toLowerCase() === 'img'
+    ? (selected as HTMLImageElement)
+    : (selected.querySelector('img') as HTMLImageElement | null));
+  const originalSrc = img?.src;
+  const existing = activePending.diffs.find(
+    (d) => d.type === 'image_regenerate_intent',
+  ) as ImageRegenerateIntentDiff | undefined;
+  if (existing) {
+    existing.prompt = prompt;
+    return existing;
+  }
+  return {
+    id: diffId(),
+    type: 'image_regenerate_intent',
+    selector: activePending.target.selector,
+    target: activePending.target.label,
+    createdAt: nowIso(),
+    originalSrc,
+    prompt,
+  };
+}
+
 function applyDirectEdit(action: DirectEditAction): {
   ok: boolean;
   pending?: PendingSelection | null;
@@ -373,6 +511,39 @@ function applyDirectEdit(action: DirectEditAction): {
   try {
     if (action.type === 'start_inline_text_edit') {
       startInlineTextEdit();
+      return { ok: true, pending: activePending };
+    }
+    if (action.type === 'pick_inner_text') {
+      if (!selected) return { ok: false, error: 'no current selection' };
+      const inner = findInnerTextTarget(selected);
+      if (!inner) {
+        return { ok: false, error: 'no inner text element to drill into' };
+      }
+      // Re-select onto the inner element. selectRegion will broadcast a
+      // fresh TARGET_SELECTED so the panel resets its state for the new
+      // (deeper) target.
+      selectRegion(inner);
+      return { ok: true, pending: activePending };
+    }
+    if (action.type === 'attach_image_reference') {
+      // v1 only handles url-kind. note / figma / upload are ignored — the
+      // panel doesn't expose them yet.
+      if (action.referenceKind !== 'url' || !action.referenceUrl) {
+        return { ok: false, error: 'only url-kind image references supported in v1' };
+      }
+      const diff = attachImageReference(action.referenceUrl);
+      if (diff && activePending) {
+        const idx = activePending.diffs.findIndex((d) => d.id === diff.id);
+        if (idx === -1) activePending.diffs = [...activePending.diffs, diff];
+      }
+      return { ok: true, pending: activePending };
+    }
+    if (action.type === 'mark_image_regenerate') {
+      const diff = markImageRegenerate(action.prompt);
+      if (diff && activePending) {
+        const idx = activePending.diffs.findIndex((d) => d.id === diff.id);
+        if (idx === -1) activePending.diffs = [...activePending.diffs, diff];
+      }
       return { ok: true, pending: activePending };
     }
     if (action.type === 'stop_inline_text_edit') {

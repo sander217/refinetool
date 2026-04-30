@@ -254,6 +254,10 @@ export type DirectEditAction =
   | { type: 'stop_inline_text_edit' }
   | { type: 'hide_selected' }
   | { type: 'remove_selected' }
+  // Drill the current selection to its most specific text-bearing descendant.
+  // Lets the user pick the text node *inside* a button or link without the
+  // picker stopping at the button (LEAF_TAGS guard).
+  | { type: 'pick_inner_text' }
   | { type: 'reorder_selected'; direction: 'up' | 'down' }
   | { type: 'start_move' }
   | { type: 'cancel_move' }
