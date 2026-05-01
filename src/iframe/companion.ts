@@ -286,19 +286,31 @@ function onDblClick(ev: MouseEvent): void {
 
 function onKey(ev: KeyboardEvent): void {
   if (!refineEnabled) return;
-  if (ev.key !== 'Escape') return;
-  // ESC priorities, top-down:
-  //   1. If editing inline text → commit + exit edit (don't kill picker)
-  //   2. Otherwise → exit picker entirely
+
+  // While editing inline text, swallow every keydown EXCEPT the ones the
+  // user is genuinely directing at the contenteditable. The browser's
+  // native text-input pipeline (insert characters, move caret with arrows,
+  // backspace) doesn't go through keydown listeners, so stopping
+  // propagation here is safe — it only blocks page-level handlers like
+  // slide-deck navigation that hijack Space / ArrowRight / etc.
   if (inlineTextActive) {
-    ev.preventDefault();
-    const diff = stopInlineTextEdit();
-    if (diff && activePending) {
-      activePending.diffs = [...activePending.diffs, diff];
-      postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending: activePending });
+    if (ev.key === 'Escape') {
+      // ESC during edit → commit + exit edit (don't kill picker).
+      ev.preventDefault();
+      ev.stopPropagation();
+      const diff = stopInlineTextEdit();
+      if (diff && activePending) {
+        activePending.diffs = [...activePending.diffs, diff];
+        postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending: activePending });
+      }
+      return;
     }
+    ev.stopPropagation();
     return;
   }
+
+  if (ev.key !== 'Escape') return;
+  // ESC outside edit → exit picker entirely
   setRefineMode(false);
   broadcastRefineMode(false);
 }
