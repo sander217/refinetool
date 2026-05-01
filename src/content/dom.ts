@@ -59,6 +59,27 @@ const INLINE_EMPHASIS_TAGS = new Set([
   'kbd',
 ]);
 
+// Block-level text-bearing tags. When the user clicks directly on one of
+// these, they almost always want to select THAT specific text element
+// (the headline, the paragraph), not whatever wrapper it lives in. The
+// previous walker would skip past h1/p/li if their classnames didn't
+// happen to match MEANINGFUL_CLASS_REGEX — so a headline "headline
+// cover-headline" got skipped and the user got the whole .cover-stack.
+const BLOCK_TEXT_TAGS = new Set([
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'p',
+  'blockquote',
+  'li',
+  'dt',
+  'dd',
+  'figcaption',
+]);
+
 const MAX_WALK = 8;
 
 // Minimum size for size-only (unnamed) container candidates. Raised to filter
@@ -102,6 +123,17 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
   if (
     INLINE_EMPHASIS_TAGS.has(startTag) &&
     readClassName(start) &&
+    (start as HTMLElement).textContent?.trim() &&
+    isSelectableCandidate(start)
+  ) {
+    return start;
+  }
+
+  // Block-level text element with actual text — the user almost certainly
+  // wants this exact element (a headline, a paragraph, a list item) and
+  // not its wrapper. Stop here regardless of class, as long as it has text.
+  if (
+    BLOCK_TEXT_TAGS.has(startTag) &&
     (start as HTMLElement).textContent?.trim() &&
     isSelectableCandidate(start)
   ) {

@@ -48,7 +48,8 @@ type Response = {
 
 type Broadcast =
   | { ns: typeof PROTOCOL_NAMESPACE; type: 'REFINE_MODE_CHANGED'; enabled: boolean }
-  | { ns: typeof PROTOCOL_NAMESPACE; type: 'TARGET_SELECTED'; pending: PendingSelection };
+  | { ns: typeof PROTOCOL_NAMESPACE; type: 'TARGET_SELECTED'; pending: PendingSelection }
+  | { ns: typeof PROTOCOL_NAMESPACE; type: 'TARGET_CLEARED' };
 
 let refineEnabled = false;
 let overlay: OverlayHandles | null = null;
@@ -136,6 +137,21 @@ function selectRegion(picked: Element): void {
   postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending });
 }
 
+// Drop the current selection: hide overlay, clear local state, broadcast
+// TARGET_CLEARED so the host panel can update too. Used when the user
+// clicks empty space (no pickable target there) and when the host RPC
+// reset_pending_selection fires.
+function clearSelectionAndBroadcast(): void {
+  if (!selected && !activePending && !overlay) return;
+  selected = null;
+  activePending = null;
+  originalStyles = null;
+  currentHover = null;
+  overlay?.hideSelection();
+  overlay?.hideHover();
+  postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_CLEARED' });
+}
+
 // Scroll/resize tracking: keep the selection overlay anchored to its
 // element as the page scrolls or the viewport resizes. Throttled via rAF
 // so a fast scroll doesn't flood layout work.
@@ -218,7 +234,12 @@ function onClick(ev: MouseEvent): void {
   ev.stopPropagation();
 
   const picked = pickMeaningfulTarget(el);
-  if (!picked) return;
+  if (!picked) {
+    // Click landed on empty / non-pickable region: drop the current
+    // selection so the user gets a clean slate (no lingering colored box).
+    clearSelectionAndBroadcast();
+    return;
+  }
   selectRegion(picked);
 }
 
