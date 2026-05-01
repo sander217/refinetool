@@ -185,9 +185,29 @@ function onMouseMove(ev: MouseEvent): void {
 
 function onClick(ev: MouseEvent): void {
   if (!refineEnabled) return;
-  if (inlineTextActive) return;
   const el = document.elementFromPoint(ev.clientX, ev.clientY);
   if (!el || !(el instanceof Element)) return;
+
+  // Inline-edit mode handling. Two cases:
+  //   - Click is INSIDE the edited element (e.g. moving the text cursor):
+  //     do nothing; let contenteditable handle the click natively.
+  //   - Click is OUTSIDE: commit the edit (records text_change diff if any)
+  //     and fall through to the normal pick path. If the click landed on a
+  //     meaningful element, the user gets a one-click "finish editing AND
+  //     pick the next region" gesture.
+  if (inlineTextActive) {
+    if (selected && (selected === el || selected.contains(el))) {
+      return;
+    }
+    const diff = stopInlineTextEdit();
+    if (diff && activePending) {
+      activePending.diffs = [...activePending.diffs, diff];
+      postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending: activePending });
+    }
+    // Continue to the pick logic below — clicking a sibling element should
+    // both finish the edit AND select the new target in one motion.
+  }
+
   const picked = pickMeaningfulTarget(el);
   if (!picked) return;
   ev.preventDefault();
@@ -235,10 +255,21 @@ function onDblClick(ev: MouseEvent): void {
 
 function onKey(ev: KeyboardEvent): void {
   if (!refineEnabled) return;
-  if (ev.key === 'Escape') {
-    setRefineMode(false);
-    broadcastRefineMode(false);
+  if (ev.key !== 'Escape') return;
+  // ESC priorities, top-down:
+  //   1. If editing inline text → commit + exit edit (don't kill picker)
+  //   2. Otherwise → exit picker entirely
+  if (inlineTextActive) {
+    ev.preventDefault();
+    const diff = stopInlineTextEdit();
+    if (diff && activePending) {
+      activePending.diffs = [...activePending.diffs, diff];
+      postToHost({ ns: PROTOCOL_NAMESPACE, type: 'TARGET_SELECTED', pending: activePending });
+    }
+    return;
   }
+  setRefineMode(false);
+  broadcastRefineMode(false);
 }
 
 // Viewport listeners stay attached for the lifetime of the companion so the
