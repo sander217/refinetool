@@ -208,10 +208,17 @@ function onClick(ev: MouseEvent): void {
     // both finish the edit AND select the new target in one motion.
   }
 
-  const picked = pickMeaningfulTarget(el);
-  if (!picked) return;
+  // Refine mode = page is frozen. Always swallow the click so page-level
+  // handlers (slide-deck navigation, link clicks, button onclicks) don't
+  // fire — even if the picker can't resolve a meaningful target. Without
+  // this, full-bleed designs with global click listeners (slide decks,
+  // single-page galleries) flip/navigate every time the picker walks past
+  // a non-pickable region.
   ev.preventDefault();
   ev.stopPropagation();
+
+  const picked = pickMeaningfulTarget(el);
+  if (!picked) return;
   selectRegion(picked);
 }
 
@@ -221,6 +228,11 @@ function onClick(ev: MouseEvent): void {
 // through the panel's "Pick text inside" + "Edit text" buttons.
 function onDblClick(ev: MouseEvent): void {
   if (!refineEnabled) return;
+  // Refine mode = page is frozen for dblclick too. Eat the event whether or
+  // not we end up drilling, so a page's own dblclick handlers (e.g. lightbox
+  // open, fullscreen toggle) don't fire on top of our selection logic.
+  ev.preventDefault();
+  ev.stopPropagation();
   if (inlineTextActive) return;
   if (!selected) return;
   // Only triggers when the dblclick is within the current selection.
@@ -237,8 +249,6 @@ function onDblClick(ev: MouseEvent): void {
     const inner = findInnerTextTarget(selected);
     if (inner) target = inner;
   }
-  ev.preventDefault();
-  ev.stopPropagation();
   // Re-select onto the inner element if we drilled.
   if (target !== selected) selectRegion(target);
   // Then immediately enter edit mode and broadcast the updated pending so
