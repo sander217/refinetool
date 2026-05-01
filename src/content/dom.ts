@@ -38,6 +38,27 @@ const LEAF_TAGS = new Set([
 const MEANINGFUL_CLASS_REGEX =
   /\b(card|hero|cta|panel|container|block|section|modal|dialog|pricing|feature|sidebar|navbar|banner|grid|list|toolbar|drawer|popover|tooltip|tab|row|col|stack|cluster|wrapper|layout|group|item|actions|media|testimonial|footer|header|field-group|btn-group|controls|figure)\b/i;
 
+// Inline text emphasis tags. When the user clicks one of these AND the dev
+// gave it a class (intentional styling — accent, highlight, mark, keyword,
+// etc.), the user almost certainly wants to select the inline span itself,
+// not its parent container. Without this short-circuit, the walker would
+// step over them in search of a "meaningful" ancestor and pick e.g. the
+// whole cover stack, which is rarely what the user pointed at.
+const INLINE_EMPHASIS_TAGS = new Set([
+  'span',
+  'em',
+  'strong',
+  'i',
+  'b',
+  'mark',
+  'code',
+  'sup',
+  'sub',
+  'small',
+  'u',
+  'kbd',
+]);
+
 const MAX_WALK = 8;
 
 // Minimum size for size-only (unnamed) container candidates. Raised to filter
@@ -74,6 +95,18 @@ export function pickMeaningfulTarget(start: Element | null): Element | null {
   if (isRootContainer(start)) return null;
   const startTag = start.tagName.toLowerCase();
   if (LEAF_TAGS.has(startTag)) return start;
+
+  // Intentionally-styled inline emphasis: the user pointed at it directly,
+  // it has a class (so a designer cared about it), and it has text content.
+  // Treat as a leaf so we don't walk past it to a parent container.
+  if (
+    INLINE_EMPHASIS_TAGS.has(startTag) &&
+    readClassName(start) &&
+    (start as HTMLElement).textContent?.trim() &&
+    isSelectableCandidate(start)
+  ) {
+    return start;
+  }
 
   let current: Element | null = start;
   for (
